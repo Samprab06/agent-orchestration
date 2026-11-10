@@ -191,6 +191,7 @@ def run(checkout, binary, logs, credentials, number):
         "body": f"Oracle verified the BanyanCode edit and opened {pr['html_url']}.",
     })
     github.request("POST", f"/issues/{number}/labels", {"labels": ["agent:review"]})
+    github.request("DELETE", f"/issues/{number}/labels/agent%3Aqueued")
     print(f"Verified commit {commit}; runner log: {log}", flush=True)
 
 

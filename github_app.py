@@ -23,7 +23,7 @@ def request_json(method, path, credential, data=None):
     })
     request.add_unredirected_header("Authorization", f"Bearer {credential}")
     with urlopen(request, timeout=20) as response:
-        return json.load(response)
+        return None if response.status == 204 else json.load(response)
 
 
 def encode(value):
