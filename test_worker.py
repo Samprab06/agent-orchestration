@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 from urllib.error import URLError
 
 from orchestrator import approval_command
-from worker import State, Worker
+from worker import State, Worker, project_paths, projects
 
 
 class WorkerTests(unittest.TestCase):
@@ -20,6 +20,9 @@ class WorkerTests(unittest.TestCase):
         self.worker.state = self.state
         self.worker.root = self.root
         self.worker.checkout = self.root
+        self.worker.branch = "main"
+        self.worker.repository = "Samprab06/agent-orchestration"
+        self.worker.remote = "https://github.com/Samprab06/agent-orchestration.git"
         self.worker.stop = Mock()
         self.worker.stop.is_set.return_value = False
         self.worker.args = SimpleNamespace(poll=45, publish_attempts=2)
@@ -59,7 +62,7 @@ class WorkerTests(unittest.TestCase):
         self.worker.github.read.return_value = []
         self.worker.github.request.return_value = {"html_url": "new-pr"}
         self.worker.issue = Mock(return_value=self.issue)
-        with patch("worker.git", return_value="123 refs/heads/agent/issue-42"), patch("worker.push_commit") as push:
+        with patch.object(self.worker, "git_remote", return_value="123 refs/heads/agent/issue-42"), patch("worker.push_commit") as push:
             self.worker.publish(self.state.get(42))
         push.assert_not_called()
         self.worker.github.request.assert_called_once()
@@ -95,3 +98,45 @@ class WorkerTests(unittest.TestCase):
         self.worker.tick()
         self.worker.edit.assert_not_called()
         self.assertIsNone(self.state.get(42))
+
+
+class ProjectTests(unittest.TestCase):
+    def test_distinct_checkouts_and_issue_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "repositories.json"
+            config.write_text('[{"repository":"Samprab06/agent-orchestration","branch":"main"},'
+                              '{"repository":"Samprab06/fixture","branch":"develop"}]')
+            repositories = projects(config)
+            state_a, checkout_a = project_paths(root / "state", root / "checkout", next(iter(repositories)))
+            state_b, checkout_b = project_paths(root / "state", root / "checkout", "samprab06/fixture")
+            self.assertNotEqual(checkout_a, checkout_b)
+            one, two = State(state_a), State(state_b)
+            try:
+                one.save({"issue": 9, "phase": "review"})
+                two.save({"issue": 9, "phase": "running"})
+                self.assertEqual(one.get(9)["phase"], "review")
+                self.assertEqual(two.get(9)["phase"], "running")
+            finally:
+                one.db.close()
+                two.db.close()
+
+    def test_rejects_paths_foreign_owners_and_duplicate_repositories(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "repositories.json"
+            for names in (["Samprab06/../escape"], ["someone/project"], ["Samprab06/X", "samprab06/x"]):
+                with self.subTest(names=names):
+                    config.write_text(json.dumps([{"repository": name, "branch": "main"} for name in names]))
+                    with self.assertRaises(ValueError):
+                        projects(config)
+
+    def test_missing_app_grant_does_not_create_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = Worker.__new__(Worker)
+            worker.checkout = Path(directory) / "checkout"
+            worker.credentials = Mock()
+            worker.credentials.token.side_effect = URLError("no installation grant")
+            with self.assertRaises(URLError):
+                worker.prepare()
+            self.assertFalse(worker.checkout.exists())

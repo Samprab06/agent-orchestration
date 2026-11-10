@@ -1,12 +1,21 @@
 # Persistent Oracle worker
 
-The worker handles one approved task at a time in `Samprab06/agent-orchestration`.
+The worker handles one approved task at a time across explicitly configured repositories.
 It polls every 45 seconds by default. GitHub remains the source of truth for
 approval and review. SQLite records local execution and publication checkpoints.
 
 ## Install on Oracle
 
-Use a current checkout of the worker source. Run these commands as the non-root
+Clone the orchestration repository and check out the reviewed release commit:
+
+```sh
+git clone https://github.com/Samprab06/agent-orchestration.git orchestrator-source
+cd orchestrator-source
+git fetch origin feat/oracle-worker-release
+git switch --detach REVIEWED_COMMIT_SHA
+```
+
+Run the install commands from that checkout. Run these commands as the non-root
 Oracle service account. On this host the account is `opc`. The source and the
 worker's clean checkout of GitHub `main` are separate.
 
@@ -19,7 +28,7 @@ install -d -m 700 "$root/source" "$root/state" \
 install -m 600 worker.py sandbox_runner.py stage1_demo.py smoke.py orchestrator.py \
   github_app.py "$root/source/"
 install -m 644 deploy/agent-orchestrator.service "$HOME/.config/systemd/user/"
-git clone https://github.com/Samprab06/agent-orchestration.git "$root/checkout"
+git rev-parse HEAD > "$root/source/REVISION"
 python3 install_banyancode.py "$root/bin"
 ```
 
@@ -38,7 +47,23 @@ AGENT_TIMEOUT=240
 AGENT_PUBLISH_ATTEMPTS=3
 ```
 
-The repository needs the labels `agent:queued`, `agent:running`,
+Install the example allowlist once, leaving existing configuration intact:
+
+```sh
+cfg="$HOME/.config/agent-orchestrator/repositories.json"
+test -e "$cfg" || install -m 600 deploy/repositories.example.json "$cfg"
+```
+
+For a new project, the owner must authorize the named repository in the App
+installation before adding it to this file. Copy the existing JSON entry and
+set `repository` to the approved `Samprab06/NAME` and `branch` to its base
+branch. The service provisions the clone using a repository-scoped App token.
+A missing App grant fails that project's poll. The orchestration repository
+keeps its original checkout and state paths. Other projects use
+`projects/samprab06/NAME/{checkout,state}` under the worker root. Issue numbers
+and `agent/issue-N` branches are local to their repository.
+
+Each repository needs the labels `agent:queued`, `agent:running`,
 `agent:failed`, `agent:cancelled`, and `agent:review`. Create any missing labels
 before enabling the service. The App can manage issue labels.
 
@@ -52,7 +77,7 @@ systemctl --user enable --now agent-orchestrator.service
 ```
 
 For updates, wait for the active task to finish, stop the service, copy the
-updated source and unit with the same `install` commands, then run
+updated source and unit from the reviewed commit with the same `install` commands, update `source/REVISION`, then run
 `systemctl --user daemon-reload` and start it again. Keep the SQLite state and
 attempt directories intact across updates.
 
@@ -75,7 +100,7 @@ suite and requires a nonempty verified diff.
 
 ```sh
 root="$HOME/.local/share/agent-orchestrator-worker"
-control() { python3 "$root/source/worker.py" --state "$root/state" "$@"; }
+control() { python3 "$root/source/worker.py" --config "$HOME/.config/agent-orchestrator/repositories.json" --state "$root/state" "$@"; }
 
 systemctl --user status agent-orchestrator.service
 systemctl --user start agent-orchestrator.service
@@ -84,8 +109,8 @@ systemctl --user restart agent-orchestrator.service
 tail -n 60 "$root/state/worker.log"
 journalctl _SYSTEMD_USER_UNIT=agent-orchestrator.service -n 60 --no-pager
 control status                     # one JSON row per issue, including active phase
-control cancel ISSUE_NUMBER        # terminates the active sandbox when possible
-control retry ISSUE_NUMBER         # resumes publication or creates a new attempt
+control --repository Samprab06/agent-orchestration cancel ISSUE_NUMBER        # terminates the active sandbox when possible
+control --repository Samprab06/agent-orchestration retry ISSUE_NUMBER         # resumes publication or creates a new attempt
 ```
 
 An operator cancellation preserves the attempt. A stop or crash during coding
@@ -95,7 +120,7 @@ worktree under `state/issue-N/attempt-M/worktree`. Inspect it with
 never restarts coding automatically.
 
 To retry, wait for the failure report to appear, add `agent:queued` again,
-confirm that the current task has a valid approval, then run `control retry N`.
+confirm that the current task has a valid approval, then run `control --repository OWNER/REPO retry N`.
 A new coding attempt uses a fresh worktree. An existing verified commit
 resumes publication only if its approval still matches. Use a new issue if
 the task changed after a commit was verified. The service can cancel work
@@ -107,7 +132,13 @@ requires human investigation. Publication failures retry with exponential
 backoff up to `AGENT_PUBLISH_ATTEMPTS`. GitHub status reporting also recovers
 after API outages. Completion removes only clean worktrees. Retained
 worktrees are operator-owned evidence and should be removed with
-`git worktree remove PATH` after their changes are inspected and backed up.
+`git worktree remove PATH` after their changes are inspected and backed up. The Stage 2 recovery example
+is at `state/issue-4/attempt-1/worktree` in the orchestration project's root.
+Use `git -C "$root/checkout" worktree list` to identify it. Review tracked
+changes and untracked files, and back up anything needed. Use
+`git -C "$root/checkout" worktree remove PATH` after the worktree is clean.
+New tasks pause when the filesystem has less than 2 GiB free. Retained attempts
+need operator review and cleanup.
 
 ## Limits and logs
 

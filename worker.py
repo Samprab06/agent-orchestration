@@ -4,6 +4,9 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import re
+import shutil
+import tempfile
 from pathlib import Path
 import signal
 import sqlite3
@@ -18,10 +21,9 @@ from github_app import InstallationCredentials
 from orchestrator import approval_command, is_approved
 from sandbox_runner import Sandbox, Stopped
 from smoke import BanyanCode, git
-from stage1_demo import APPROVER, REPOSITORY, DemoGitHub, push_commit
+from stage1_demo import APPROVER, REPOSITORY, DemoGitHub, git_auth_env, push_commit
 
 
-REMOTE = f"https://github.com/{REPOSITORY}.git"
 BOT = "samprab06-agent-worker[bot]"
 TERMINAL = {"review", "failed", "interrupted", "cancelled"}
 RETRYABLE = TERMINAL - {"review"}
@@ -74,18 +76,78 @@ class State:
         self.db.execute("DELETE FROM commands WHERE issue=?", (issue,))
 
 
+def projects(path):
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("Configure at least one repository in the allowlist")
+    result = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"repository", "branch"}:
+            raise ValueError("Each project must specify repository and branch")
+        repo, branch = entry["repository"], entry["branch"]
+        if not isinstance(repo, str) or not re.fullmatch(
+            r"Samprab06/[a-z0-9][a-z0-9_.-]{0,99}", repo, re.IGNORECASE | re.ASCII
+        ) or repo.lower().endswith((".git", ".")):
+            raise ValueError("Repositories must use Samprab06/NAME")
+        if not isinstance(branch, str) or not branch or branch.startswith("-") or (
+            subprocess.run(["git", "check-ref-format", "refs/heads/" + branch],
+                           capture_output=True, timeout=10).returncode
+        ):
+            raise ValueError("Invalid configured base branch")
+        key = repo.lower()
+        if key in result:
+            raise ValueError(f"Duplicate repository: {repo}")
+        result[key] = (repo, branch)
+    return result
+
+
+def project_paths(state, checkout, repository):
+    if repository.lower() == REPOSITORY.lower():
+        return state, checkout
+    project = state.parent / "projects" / repository.lower()
+    return project / "state", project / "checkout"
+
+
 class Worker:
-    def __init__(self, args, state, stop):
+    def __init__(self, args, state, stop, repository, branch, checkout, root):
         self.args, self.state, self.stop = args, state, stop
-        self.checkout = args.checkout.resolve(strict=True)
-        self.root = args.state.resolve()
+        self.checkout = checkout
+        self.root = root
+        self.repository = repository
+        self.branch = branch
+        self.remote = f"https://github.com/{repository}.git"
         self.credentials = InstallationCredentials(
-            REPOSITORY, args.app_id, Path.home() / ".config/agent-orchestrator/github-app.pem"
+            repository, args.app_id, Path.home() / ".config/agent-orchestrator/github-app.pem"
         )
         self.github = DemoGitHub(self.credentials)
         self.runner = Sandbox(BanyanCode(str(args.banyancode.resolve(strict=True)),
                                          args.model), self.checkout, args.timeout)
         self.skipped = set()
+
+    def log(self, message):
+        log(f"{self.repository}: {message}")
+
+    def git_remote(self, *arguments):
+        return subprocess.check_output(
+            ["git", "-C", str(self.checkout), *arguments], text=True, timeout=60,
+            env=git_auth_env(self.credentials.token()), stderr=subprocess.STDOUT,
+        ).strip()
+
+    def prepare(self):
+        token = self.credentials.token()
+        if not self.checkout.exists():
+            self.checkout.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=self.checkout.parent) as temp:
+                target = Path(temp) / "repo"
+                subprocess.run(
+                    ["git", "clone", "--no-tags", "--branch", self.branch,
+                     self.remote, str(target)],
+                    env=git_auth_env(token), check=True, timeout=120,
+                )
+                target.rename(self.checkout)
+        if (self.checkout.is_symlink() or not (self.checkout / ".git").is_dir()
+                or git(self.checkout, "remote", "get-url", "origin").lower() != self.remote.lower()):
+            raise ValueError("Project checkout does not match the configured repository")
 
     def cancelled(self, number):
         return self.stop.is_set() or self.state.command(number) == "cancel"
@@ -100,7 +162,7 @@ class Worker:
         self.state.save(task, phase=phase, error=error, reported=False, report_next=0)
         if phase == "cancelled":
             self.state.clear(task["issue"])
-        log(f"Issue #{task['issue']} {phase}" + (f": {error}" if error else ""))
+        self.log(f"Issue #{task['issue']} {phase}" + (f": {error}" if error else ""))
 
     def issue(self, number, allowed_status=()):
         issue = self.github.read(f"/issues/{number}")
@@ -152,8 +214,8 @@ class Worker:
 
     def edit(self, task, issue):
         number = task["issue"]
-        self.state.save(task, phase="running", started=time.time())
-        log(f"Issue #{number} starting attempt {task['attempt']}")
+        self.state.save(task, phase="running", started=time.time(), base_branch=self.branch)
+        self.log(f"Issue #{number} starting attempt {task['attempt']}")
         directory = self.attempt_dir(task)
         worktree, home, output = directory / "worktree", directory / "home", directory / "task.log"
         try:
@@ -162,7 +224,7 @@ class Worker:
             home.mkdir(mode=0o700)
             if git(self.checkout, "status", "--porcelain"):
                 raise ValueError("The worker checkout is dirty")
-            git(self.checkout, "fetch", "--no-tags", REMOTE, "main")
+            self.git_remote("fetch", "--no-tags", self.remote, f"refs/heads/{self.branch}")
             base = git(self.checkout, "rev-parse", "FETCH_HEAD")
             git(self.checkout, "worktree", "add", "--detach", str(worktree), base)
             current = self.issue(number, ("agent:running",))
@@ -196,7 +258,7 @@ class Worker:
                 "commit", "-m", f"Implement approved issue #{number}")
             commit = git(worktree, "rev-parse", "HEAD")
             self.state.save(task, phase="publish", commit=commit, failures=0, next_try=0)
-            log(f"Issue #{number} verified {commit}; task log {output}")
+            self.log(f"Issue #{number} verified {commit}; task log {output}")
         except Stopped as error:
             phase = "cancelled" if self.state.command(number) == "cancel" else "interrupted"
             self.finish(task, phase, str(error) + ". Worktree retained if created.")
@@ -204,8 +266,8 @@ class Worker:
             self.finish(task, "failed", f"{type(error).__name__}: {error}. Worktree retained if created.")
         self.prune_logs()
 
-    def existing_pr(self, branch, commit):
-        query = urlencode({"state": "all", "head": f"{APPROVER}:{branch}", "base": "main"})
+    def existing_pr(self, branch, commit, base):
+        query = urlencode({"state": "all", "head": f"{APPROVER}:{branch}", "base": base})
         prs = self.github.read(f"/pulls?{query}")
         if len(prs) > 1 or (prs and prs[0]["head"]["sha"] != commit):
             raise ValueError("Remote pull request does not match the verified commit")
@@ -214,17 +276,20 @@ class Worker:
     def publish(self, task):
         number, commit = task["issue"], task["commit"]
         branch = f"agent/issue-{number}"
+        base = task.get("base_branch", "main")
         try:
-            pr = self.existing_pr(branch, commit)
+            pr = self.existing_pr(branch, commit, base)
             if pr is None:
+                if base != self.branch:
+                    raise ValueError("Verified commit belongs to a different configured base branch")
                 current = self.issue(number, ("agent:running",))
                 if current is None or approval_command(current) != task["approval"]:
                     raise ValueError("Approval changed before publication")
                 if self.cancelled(number):
                     raise Stopped("Cancellation or shutdown requested")
-                remote = git(self.checkout, "ls-remote", REMOTE, f"refs/heads/{branch}")
+                remote = self.git_remote("ls-remote", self.remote, f"refs/heads/{branch}")
                 if not remote:
-                    push_commit(self.checkout, commit, branch, self.credentials.token())
+                    push_commit(self.checkout, commit, branch, self.credentials.token(), self.repository)
                 elif remote.split()[0] != commit:
                     raise ValueError("Remote branch exists at a different commit")
                 current = self.issue(number, ("agent:running",))
@@ -233,7 +298,7 @@ class Worker:
                 if self.cancelled(number):
                     raise Stopped("Cancellation or shutdown requested")
                 pr = self.github.request("POST", "/pulls", {
-                    "title": f"Implement approved issue #{number}", "head": branch, "base": "main",
+                    "title": f"Implement approved issue #{number}", "head": branch, "base": base,
                     "body": f"Closes #{number}. Oracle verified commit `{commit}`.", "draft": True,
                 })
             self.state.save(task, pr=pr["html_url"])
@@ -245,7 +310,7 @@ class Worker:
                         raise ValueError("Worktree still contains local files")
                     git(self.checkout, "worktree", "remove", str(worktree))
                 except ERRORS:
-                    log(f"Issue #{number}: kept worktree at {worktree}")
+                    self.log(f"Issue #{number}: kept worktree at {worktree}")
         except Stopped:
             if self.state.command(number) == "cancel":
                 self.finish(task, "cancelled", "Operator cancelled publication. Verified commit retained.")
@@ -259,19 +324,22 @@ class Worker:
             else:
                 wait = min(600, self.args.poll * 2 ** (failures - 1))
                 self.state.save(task, next_try=time.time() + wait)
-                log(f"Issue #{number}: publication retry {failures + 1} in {wait}s ({error})")
+                self.log(f"Issue #{number}: publication retry {failures + 1} in {wait}s ({error})")
 
     def retry(self, task):
         number = task["issue"]
         # Failed tasks require the owner to requeue and approve their current content.
         current = self.issue(number, ("agent:failed", "agent:cancelled", "agent:running"))
         if current is None:
-            log(f"Issue #{number}: retry requires an open, queued issue with valid approval")
+            self.log(f"Issue #{number}: retry requires an open, queued issue with valid approval")
             return
         digest = approval_command(current)
         if task.get("commit") and digest != task["approval"]:
-            log(f"Issue #{number}: verified commit belongs to an older approval. Use a new issue.")
+            self.log(f"Issue #{number}: verified commit belongs to an older approval. Use a new issue.")
             self.state.clear(number)
+            return
+        if not task.get("commit") and shutil.disk_usage(self.root).free < 2 * 1024**3:
+            self.log("Under 2 GiB free; pausing coding retry")
             return
         for name in ("failed", "cancelled"):
             self.label(number, "agent:" + name, False)
@@ -292,7 +360,7 @@ class Worker:
                     self.report(task)
                 except ERRORS as error:
                     self.state.save(task, report_next=time.time() + 300)
-                    log(f"Issue #{number}: status reporting will retry: {error}")
+                    self.log(f"Issue #{number}: status reporting will retry: {error}")
             if phase in RETRYABLE and task.get("reported") and self.state.command(number) == "retry":
                 self.retry(task)
                 return
@@ -301,6 +369,10 @@ class Worker:
             ):
                 self.publish(task)
                 return
+        # Retain uncertain work, but stop admitting new attempts if disk runs low.
+        if shutil.disk_usage(self.root).free < 2 * 1024**3:
+            self.log("Under 2 GiB free; pausing new tasks")
+            return
         for page in range(1, 11):
             if self.stop.is_set():
                 return
@@ -316,7 +388,7 @@ class Worker:
                 issue = self.issue(number)
                 if issue is None:
                     if number not in self.skipped:
-                        log(f"Issue #{number} skipped: no current approval from {APPROVER}")
+                        self.log(f"Issue #{number} skipped: no current approval from {APPROVER}")
                         self.skipped.add(number)
                     continue
                 self.edit({"issue": number, "attempt": 1, "approval": approval_command(issue)}, issue)
@@ -329,33 +401,44 @@ class Worker:
             if len(issues) < 50:
                 return
 
-    def run(self):
-        self.recover()
-        log(f"Worker online; polling every {self.args.poll}s")
-        failures = 0
-        while not self.stop.is_set():
+def run_workers(workers, stop, poll):
+    for worker in workers:
+        worker.recover()
+    log(f"Worker online; polling {len(workers)} configured repositories every {poll}s")
+    failures = {}
+    due = {}
+    while not stop.is_set():
+        for worker in workers:
+            if stop.is_set():
+                break
+            name = worker.repository
+            if time.monotonic() < due.get(name, 0):
+                continue
             try:
-                self.tick()
-                failures = 0
-                delay = self.args.poll
+                worker.prepare()
+                worker.tick()
+                failures[name] = 0
             except ERRORS as error:
-                failures = min(failures + 1, 5)
-                delay = min(600, self.args.poll * 2 ** failures)
-                log(f"Poll failed: {error}; retry in {delay}s")
-            self.stop.wait(delay)
-        log("Worker stopped")
+                failures[name] = min(failures.get(name, 0) + 1, 5)
+                delay = min(600, poll * 2 ** failures[name])
+                due[name] = time.monotonic() + delay
+                log(f"{name}: poll failed: {error}; retry in {delay}s")
+        stop.wait(poll)
+    log("Worker stopped")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--repository", help="Select a configured repository for status or controls")
     commands = parser.add_subparsers(dest="action", required=True)
     serve = commands.add_parser("serve")
     serve.add_argument("--checkout", type=Path, required=True)
     serve.add_argument("--banyancode", type=Path, required=True)
     serve.add_argument("--app-id", type=int, required=True)
     serve.add_argument("--model", default="opencode/beam-free")
-    serve.add_argument("--poll", type=int, choices=range(30, 61), default=45, metavar="30–60")
+    serve.add_argument("--poll", type=int, choices=range(30, 61), default=45, metavar="30ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“60")
     serve.add_argument("--timeout", type=int, default=240)
     serve.add_argument("--publish-attempts", type=int, default=3)
     serve.add_argument("--keep-logs", type=int, default=20)
@@ -364,12 +447,28 @@ def main():
         commands.add_parser(action).add_argument("issue", type=int)
     args = parser.parse_args()
     os.umask(0o077)
-    state = State(args.state)
+    try:
+        configured = projects(args.config)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        parser.error(str(error))
+    if args.repository and args.repository.lower() not in configured:
+        parser.error("Repository is outside the configured allowlist")
+    args.state = args.state.resolve()
+    checkout = getattr(args, "checkout", args.state.parent / "checkout").absolute()
     if args.action == "status":
-        for task in state.all():
-            print(json.dumps(task))
+        for key, (repo, _) in configured.items():
+            if args.repository and args.repository.lower() != key:
+                continue
+            root, _ = project_paths(args.state, checkout, repo)
+            for task in State(root).all():
+                print(json.dumps({"repository": repo, **task}))
         return 0
     if args.action in ("cancel", "retry"):
+        if not args.repository and len(configured) != 1:
+            parser.error("--repository is required when more than one repository is configured")
+        repo, _ = configured[args.repository.lower()] if args.repository else next(iter(configured.values()))
+        root, _ = project_paths(args.state, checkout, repo)
+        state = State(root)
         task = state.get(args.issue)
         phases = {"running", "publish"} if args.action == "cancel" else RETRYABLE
         if task is None or task["phase"] not in phases:
@@ -378,11 +477,12 @@ def main():
         log(f"Requested {args.action} for issue #{args.issue}")
         return 0
     if not (1 <= args.publish_attempts <= 10 and 10 <= args.timeout <= 900 and args.keep_logs > 0):
-        parser.error("Use 1–10 publication attempts, a 10–900s timeout and at least one log")
+        parser.error("Use 1ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“10 publication attempts, a 10ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“900s timeout and at least one log")
     import fcntl
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
+    args.state.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (args.state / "worker.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         handler = RotatingFileHandler(
@@ -392,7 +492,11 @@ def main():
         handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
         LOGGER.setLevel(logging.INFO)
         LOGGER.addHandler(handler)
-        Worker(args, state, stop).run()
+        workers = []
+        for repo, branch in configured.values():
+            root, path = project_paths(args.state, checkout, repo)
+            workers.append(Worker(args, State(root), stop, repo, branch, path, root))
+        run_workers(workers, stop, args.poll)
     return 0
 
 
