@@ -44,17 +44,21 @@ the eventual issue-driven runner under its own restricted OS identity.
 
 ## Run the live GitHub demo
 
-Use a GitHub App installed only on this repository, with Contents, Issues and
-Pull requests read/write. Provision a short-lived installation token directly
-on Oracle in `~/.config/agent-orchestrator/github-token` with mode `0600`.
-The worker rejects a personal token authenticated as the sole approver,
-`Samprab06`. Rotate the installation token if it expires before the run.
+Install a GitHub App only on this repository, with Contents, Issues, and
+Pull requests read/write. On Oracle, place its private key at
+`~/.config/agent-orchestrator/github-app.pem` with mode `0600`, owned by the
+worker. Keep the key outside the checkout. Python 3.9+ and OpenSSL are
+required. Pass the numeric App ID as `--app-id`. The worker discovers the
+installation, mints a short-lived token restricted to this repository, and
+refreshes the token in memory before it expires. The app can create and
+update the demo issue. Only `Samprab06` can approve its execution.
+
 
 From the staging directory containing the source files and `bin/banyancode`,
 create or find the disposable queued issue:
 
 ```sh
-python3 stage1_demo.py --logs logs --create-issue
+python3 stage1_demo.py --app-id "$APP_ID" --logs logs --create-issue
 ```
 
 Open the printed issue URL and post the exact approval comment as
@@ -62,7 +66,7 @@ Open the printed issue URL and post the exact approval comment as
 
 ```sh
 /usr/bin/time -f 'wall=%e user_cpu=%U system_cpu=%S avg_cpu=%P peak_rss_kib=%M' \
-  python3 stage1_demo.py --checkout checkout --banyancode bin/banyancode --logs logs
+  python3 stage1_demo.py --app-id "$APP_ID" --checkout checkout --banyancode bin/banyancode --logs logs
 ```
 
 The one-shot worker discovers the queued issue and checks approval before

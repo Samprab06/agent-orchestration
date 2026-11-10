@@ -10,9 +10,9 @@ import subprocess
 import sys
 import tempfile
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from github_app import InstallationCredentials, request_json
 
-from orchestrator import GitHub, approval_command, is_approved
+from orchestrator import approval_command, is_approved
 from smoke import BanyanCode, git
 
 
@@ -22,36 +22,27 @@ TITLE = "Stage 1 Oracle smoke test"
 BODY = "Use BanyanCode to add smoke.txt containing ORACLE_RUNNER_OK and open a draft PR."
 
 
-class DemoGitHub(GitHub):
-    def request(self, method, path, data=None, account=False):
-        url = ("https://api.github.com" if account else self.base) + path
-        headers = {key: value for key, value in self.headers.items() if key != "Authorization"}
-        body = None if data is None else json.dumps(data).encode()
-        if body is not None:
-            headers["Content-Type"] = "application/json"
-        request = Request(url, data=body, headers=headers, method=method)
-        request.add_unredirected_header("Authorization", self.headers["Authorization"])
-        with urlopen(request, timeout=20) as response:
-            return json.load(response)
+class DemoGitHub:
+    def __init__(self, credentials):
+        self.credentials = credentials
+
+    def request(self, method, path, data=None):
+        return request_json(
+            method, f"/repos/{REPOSITORY}{path}", self.credentials.token(), data
+        )
 
     def read(self, path):
         return self.request("GET", path)
 
-
-def verify_worker(github):
-    try:
-        login = github.request("GET", "/user", account=True)["login"]
-    except HTTPError as error:
-        if error.code != 403:
-            raise
-        installation = github.request("GET", "/installation/repositories", account=True)
-        repos = [repo["full_name"].casefold() for repo in installation["repositories"]]
-        if installation["total_count"] != 1 or repos != [REPOSITORY.casefold()]:
-            raise ValueError("The worker app token must be scoped to this repository only")
-        return "oracle-agent-worker"
-    if login.casefold() == APPROVER.casefold():
-        raise ValueError("The demo requires a worker credential separate from Samprab06")
-    return login
+    def comments(self, issue_number):
+        for page in range(1, 11):
+            comments = self.read(
+                f"/issues/{issue_number}/comments?per_page=100&page={page}"
+            )
+            yield from comments
+            if len(comments) < 100:
+                return
+        raise ValueError("approval scan exceeded 1,000 comments")
 
 
 def check_task(github, number):
@@ -168,9 +159,9 @@ def push_commit(checkout, commit, branch, token):
     )
 
 
-def run(checkout, binary, logs, token, number):
-    github = DemoGitHub(REPOSITORY, token)
-    login = verify_worker(github)
+def run(checkout, binary, logs, credentials, number):
+    github = DemoGitHub(credentials)
+    login = "oracle-agent-worker"
     if number is None:
         number = discover_task(github)
     check_task(github, number)
@@ -187,7 +178,7 @@ def run(checkout, binary, logs, token, number):
     if git(checkout, "status", "--porcelain") or git(checkout, "rev-parse", "HEAD") != head:
         raise ValueError("Original checkout changed during the demo")
     check_task(github, number)
-    push_commit(checkout, commit, branch, token)
+    push_commit(checkout, commit, branch, credentials.token())
     pr = github.request("POST", "/pulls", {
         "title": "Stage 1: Oracle BanyanCode smoke test",
         "head": branch,
@@ -208,6 +199,7 @@ def main():
     parser.add_argument("--checkout", type=Path)
     parser.add_argument("--banyancode", type=Path)
     parser.add_argument("--logs", type=Path, required=True)
+    parser.add_argument("--app-id", type=int, required=True)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--issue", type=int)
     mode.add_argument("--create-issue", action="store_true")
@@ -216,23 +208,22 @@ def main():
         parser.error("--checkout and --banyancode are required to run an approved issue")
     if args.issue is not None and args.issue < 1:
         parser.error("--issue must be positive")
-    token_file = Path.home() / ".config/agent-orchestrator/github-token"
+    if args.app_id < 1:
+        parser.error("--app-id must be positive")
+    credentials = InstallationCredentials(
+        REPOSITORY, args.app_id, Path.home() / ".config/agent-orchestrator/github-app.pem"
+    )
     try:
-        if token_file.stat().st_mode & 0o077:
-            raise ValueError("Worker token file must be accessible only to its owner")
-        token = token_file.read_text().strip()
-        if not token:
-            raise ValueError("Worker token file is empty")
         args.logs.mkdir(mode=0o700, parents=True, exist_ok=True)
         with (args.logs / "stage1.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.create_issue:
-                github = DemoGitHub(REPOSITORY, token)
-                verify_worker(github)
+                github = DemoGitHub(credentials)
+                credentials.token()
                 create_issue(github)
             else:
                 run(args.checkout.resolve(strict=True), args.banyancode.resolve(strict=True),
-                    args.logs.resolve(), token, args.issue)
+                    args.logs.resolve(), credentials, args.issue)
     except (OSError, ValueError, HTTPError, URLError, subprocess.SubprocessError) as error:
         print(f"Stage 1 stopped: {error}", file=sys.stderr)
         return 1
