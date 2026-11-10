@@ -42,12 +42,37 @@ and retry manually or pass a verified model with `--model`. The smoke runner
 accepts a fixed local prompt. Git worktrees provide branch separation. Deploy
 the eventual issue-driven runner under its own restricted OS identity.
 
-## GitHub demo prerequisites
+## Run the live GitHub demo
 
-Use a dedicated repository-scoped GitHub credential for the worker. The
-eventual draft PR path needs Issues, Contents, and Pull requests read/write.
-Keep it outside the checkout and separate from the coding-agent process.
-Select a human GitHub approver and a repository for the first task.
+Use a GitHub App installed only on this repository, with Contents, Issues and
+Pull requests read/write. Provision a short-lived installation token directly
+on Oracle in `~/.config/agent-orchestrator/github-token` with mode `0600`.
+The worker rejects a personal token authenticated as the sole approver,
+`Samprab06`. Rotate the installation token if it expires before the run.
 
-The live dispatch, draft PR, board updates, systemd service, and MCP server
-are pending.
+From the staging directory containing the source files and `bin/banyancode`,
+create or find the disposable queued issue:
+
+```sh
+python3 stage1_demo.py --logs logs --create-issue
+```
+
+Open the printed issue URL and post the exact approval comment as
+`Samprab06`. Then run the worker from Oracle with a clean clone in `checkout`:
+
+```sh
+/usr/bin/time -f 'wall=%e user_cpu=%U system_cpu=%S avg_cpu=%P peak_rss_kib=%M' \
+  python3 stage1_demo.py --checkout checkout --banyancode bin/banyancode --logs logs
+```
+
+The one-shot worker discovers the queued issue and checks approval before
+launching BanyanCode and again before pushing. It only accepts the fixed
+smoke task and commits only `smoke.txt`. It opens a draft PR and posts its
+URL to the issue. Check the PR for the Verify workflow. The runner log is
+`logs/issue-<number>.jsonl`.
+
+If the worker reports that the branch exists, check for a previous draft
+PR before retrying. A failed PR API call can leave a pushed branch. Open a
+draft PR manually from that branch after reviewing the commit. The worker
+only runs once per invocation. A persistent dispatcher, board reporting,
+and OS isolation for arbitrary coding tasks belong to later stages.
