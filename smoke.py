@@ -18,6 +18,12 @@ class BanyanCode:
         self.executable = executable
         self.model = model
 
+    def command(self, prompt, executable=None):
+        return [
+            executable or self.executable, "--standalone", "run", "--format",
+            "json", "--model", self.model, prompt,
+        ]
+
     def run(self, worktree, home, log):
         home.mkdir(mode=0o700)
         env = {
@@ -32,10 +38,7 @@ class BanyanCode:
             "ORACLE_RUNNER_OK followed by one newline. This is a local smoke "
             "test. Do not use the shell or touch other files."
         )
-        command = [
-            "timeout", "--kill-after=5s", "90s", self.executable,
-            "--standalone", "run", "--format", "json", "--model", self.model, prompt,
-        ]
+        command = ["timeout", "--kill-after=5s", "90s", *self.command(prompt)]
         with log.open("w", encoding="utf-8") as output:
             subprocess.run(
                 command, cwd=worktree, env=env, stdin=subprocess.DEVNULL,

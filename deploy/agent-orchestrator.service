@@ -1,0 +1,24 @@
+[Unit]
+Description=Oracle GitHub coding agent worker
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/agent-orchestrator-worker
+EnvironmentFile=%h/.config/agent-orchestrator/worker.env
+ExecStart=/usr/bin/python3 %h/.local/share/agent-orchestrator-worker/source/worker.py --config %h/.config/agent-orchestrator/repositories.json --state %h/.local/share/agent-orchestrator-worker/state serve --checkout %h/.local/share/agent-orchestrator-worker/checkout --banyancode %h/.local/share/agent-orchestrator-worker/bin/banyancode --app-id ${AGENT_APP_ID} --model ${AGENT_MODEL} --poll ${AGENT_POLL} --timeout ${AGENT_TIMEOUT} --publish-attempts ${AGENT_PUBLISH_ATTEMPTS}
+Restart=on-failure
+RestartSec=10s
+KillMode=mixed
+TimeoutStopSec=35s
+CPUQuota=100%
+MemoryHigh=896M
+MemoryMax=1200M
+TasksMax=96
+Nice=5
+NoNewPrivileges=yes
+UMask=0077
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=default.target

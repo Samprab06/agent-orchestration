@@ -2,7 +2,6 @@
 import argparse
 from base64 import b64encode
 from contextlib import contextmanager
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -28,7 +27,7 @@ class DemoGitHub:
 
     def request(self, method, path, data=None):
         return request_json(
-            method, f"/repos/{REPOSITORY}{path}", self.credentials.token(), data
+            method, f"/repos/{self.credentials.repository}{path}", self.credentials.token(), data
         )
 
     def read(self, path):
@@ -137,7 +136,7 @@ def run_edit(checkout, base, runner, log, login):
         return commit
 
 
-def push_commit(checkout, commit, branch, token):
+def git_auth_env(token):
     # Git receives the credential through its environment, never through argv or a URL.
     auth = b64encode(f"x-access-token:{token}".encode()).decode()
     env = {
@@ -150,12 +149,16 @@ def push_commit(checkout, commit, branch, token):
         "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
         "GIT_CONFIG_VALUE_0": f"Authorization: Basic {auth}",
     }
+    return env
+
+
+def push_commit(checkout, commit, branch, token, repository=REPOSITORY):
     # An empty lease requires that the remote branch does not already exist.
     ref = f"refs/heads/{branch}"
     subprocess.run(
         ["git", "-C", str(checkout), "push", f"--force-with-lease={ref}:",
-         f"https://github.com/{REPOSITORY}.git", f"{commit}:{ref}"],
-        env=env, timeout=60, check=True,
+         f"https://github.com/{repository}.git", f"{commit}:{ref}"],
+        env=git_auth_env(token), timeout=60, check=True,
     )
 
 
@@ -196,6 +199,8 @@ def run(checkout, binary, logs, credentials, number):
 
 
 def main():
+    import fcntl
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path)
     parser.add_argument("--banyancode", type=Path)
