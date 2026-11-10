@@ -2,7 +2,6 @@
 import argparse
 from base64 import b64encode
 from contextlib import contextmanager
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -196,6 +195,8 @@ def run(checkout, binary, logs, credentials, number):
 
 
 def main():
+    import fcntl
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path)
     parser.add_argument("--banyancode", type=Path)

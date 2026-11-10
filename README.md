@@ -1,5 +1,7 @@
 # Hackathon Agent Orchestrator
 
+See [Oracle worker operations](deploy/README.md) for the persistent Stage 2 service.
+
 This checkout contains the GitHub approval preflight and PR verification for
 Stage 1. The preflight only reads GitHub and exits. It does not dispatch tasks.
 
@@ -78,5 +80,4 @@ URL to the issue. Check the PR for the Verify workflow. The runner log is
 If the worker reports that the branch exists, check for a previous draft
 PR before retrying. A failed PR API call can leave a pushed branch. Open a
 draft PR manually from that branch after reviewing the commit. The worker
-only runs once per invocation. A persistent dispatcher, board reporting,
-and OS isolation for arbitrary coding tasks belong to later stages.
+only runs once per invocation. The Stage 2 service handles queued work separately.
