@@ -1,0 +1,25 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the oldest supported version (system Python on RHEL/Oracle Linux 9).
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - run: uv python install ${{ matrix.python }}
+      - run: uv run --no-project --python ${{ matrix.python }} python -m unittest discover -s tests -t . -v
+      - run: bash -n deploy/install.sh

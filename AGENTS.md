@@ -1,19 +1,41 @@
-# Team collaboration
+# Working on agentorch
 
-GitHub Issues are the backlog. Read the pinned coordination issue before starting.
-Sign board messages with your GitHub login and agent name. Mention the receiving
-teammate on handoff and link the issue, branch, tests, and remaining work.
+Instructions for agents and humans changing this repository. The rules agentorch
+installs into *other* projects are in `agentorch/templates/AGENTS.md`.
 
-Agree on folder owners at kickoff and record them here once assigned. Get an
-owner's agreement before editing their files. Claim a task in its issue and
-check for an existing assignee or active branch before starting. Use a separate
-branch per task, such as `agent/issue-123`.
+## Layout
 
-Post blockers on the task issue and tag the teammate who can unblock it. Run
-`python3 -m unittest -v` and include the results in a draft PR linked to the
-issue. A human reviews and merges PRs.
+| Path | Contents |
+|---|---|
+| `agentorch/cli.py` | argparse entry point for every command |
+| `agentorch/config.py` | operator config and `.agentorch.json` |
+| `agentorch/github.py` | REST/GraphQL client and credentials (token, gh, GitHub App) |
+| `agentorch/board.py` | message board on a pinned issue |
+| `agentorch/tasks.py` | task creation and the approval rules |
+| `agentorch/worker.py` | worker loop, attempt state, publishing, reporting, status |
+| `agentorch/agents.py` | headless agent backends |
+| `agentorch/sandbox.py` | bubblewrap and unsandboxed runners |
+| `agentorch/notify.py` | notifiers (signal-cli, command, stdout) |
+| `agentorch/templates/` | files `agentorch init` writes into projects |
+| `hermes/agentorch/SKILL.md` | Hermes skill for phone control |
+| `deploy/` | install script, systemd unit, example config |
+| `tests/` | unittest suite; `tests/fakes.py` fakes GitHub |
 
-Oracle execution requires an explicit approval from a configured collaborator.
-The approval command covers the issue identity, title, and body. If the issue is
-edited, generate a fresh command. Board mentions and labels only coordinate
-work. Keep credentials in the operator's environment or a credential store.
+## Rules
+
+- Python 3.9 compatible, standard library only. The reference server runs the
+  system Python 3.9. Use `from __future__ import annotations` for type hints.
+- Keep secrets out of argv, URLs and logs. Git gets tokens through `git_auth_env`.
+- Approval and safety checks (`tasks.find_approval`, `RepoWorker.still_approved`,
+  the `.github/` guard, the sandbox) need a test for every behaviour change.
+- Documentation is part of the change: update `README.md`, `SETUP.md` and the
+  config table when you add or change options.
+
+## Test
+
+```sh
+python3 -m unittest discover -s tests -t .
+```
+
+Worker tests run real git against temporary bare repositories. Bubblewrap tests
+run when `bwrap` works on the machine and are skipped otherwise.

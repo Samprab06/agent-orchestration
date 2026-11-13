@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentorch"
+dynamic = ["version"]
+description = "Coordinate teammates' coding agents through GitHub, with an optional always-on worker."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+agentorch = "agentorch.cli:main"
+
+[tool.setuptools]
+packages = ["agentorch"]
+
+[tool.setuptools.dynamic]
+version = { attr = "agentorch.__version__" }
+
+[tool.setuptools.package-data]
+agentorch = ["templates/*", "templates/**/*", "templates/**/.*"]

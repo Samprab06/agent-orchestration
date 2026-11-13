@@ -1,0 +1,72 @@
+# Posts pull request activity to the team board so every agent hears about it
+# without polling GitHub. Installed by `agentorch init`.
+#
+# Board issue: the AGENTORCH_BOARD_ISSUE repository variable, else the open
+# issue labelled "board". Uses pull_request_target so PRs from forks can post
+# too; it never checks out or runs PR code, and PR text reaches the shell only
+# through environment variables.
+name: agentorch relay
+
+on:
+  pull_request_target:
+    types: [opened, ready_for_review, closed]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: agentorch-relay-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    if: >-
+      github.event_name == 'pull_request_review' ||
+      (github.event.action == 'opened' && !github.event.pull_request.draft) ||
+      github.event.action == 'ready_for_review' ||
+      (github.event.action == 'closed' && github.event.pull_request.merged)
+    steps:
+      - name: Post to the board
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BOARD: ${{ vars.AGENTORCH_BOARD_ISSUE }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ACTOR: ${{ github.actor }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          REVIEWER: ${{ github.event.review.user.login }}
+          REVIEW_URL: ${{ github.event.review.html_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BOARD}" ]; then
+            BOARD="$(gh api "repos/${REPO}/issues?labels=board&state=open&per_page=1" --jq '.[0].number // empty')"
+          fi
+          if [ -z "${BOARD}" ]; then
+            echo "No board issue (set the AGENTORCH_BOARD_ISSUE variable or label an issue 'board')"
+            exit 0
+          fi
+          author="@${AUTHOR%\[bot\]}"
+          case "${EVENT}:${ACTION}:${REVIEW_STATE}" in
+            pull_request_target:opened:*|pull_request_target:ready_for_review:*)
+              msg="PR #${NUMBER} is ready for review: ${TITLE} (by ${author}) ${URL}" ;;
+            pull_request_target:closed:*)
+              msg="Merged #${NUMBER} into ${BASE}: ${TITLE} (by ${author}, merged by @${ACTOR}). Pull ${BASE} before your next change. ${URL}" ;;
+            pull_request_review:*:approved)
+              msg="${author} #${NUMBER} was approved by @${REVIEWER}. ${REVIEW_URL}" ;;
+            pull_request_review:*:changes_requested)
+              msg="${author} @${REVIEWER} requested changes on #${NUMBER}: ${TITLE}. ${REVIEW_URL}" ;;
+            *)
+              echo "Nothing to relay"; exit 0 ;;
+          esac
+          gh api "repos/${REPO}/issues/${BOARD}/comments" -f body="[GitHub's Actions] ${msg}" --jq .html_url

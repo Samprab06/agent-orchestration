@@ -1,0 +1,39 @@
+{
+  "identity": { "human": "Sam", "agent": "Server" },
+  "approvers": ["your-github-login"],
+  "auto_approve": "none",
+
+  "github": {
+    "auth": "token",
+    "token_file": "~/.config/agentorch/github-token"
+  },
+
+  "agent": {
+    "type": "banyancode",
+    "command": "banyancode",
+    "model": "opencode/beam-free",
+    "timeout": 900
+  },
+
+  "sandbox": { "type": "bwrap", "verify_timeout": 300, "binds": [] },
+
+  "worker": {
+    "state_dir": "~/.local/share/agentorch",
+    "poll": 45,
+    "task_trigger": "/task",
+    "watch_board": true
+  },
+
+  "notify": [
+    { "type": "telegram", "env_file": "~/.hermes/.env" }
+  ],
+
+  "repositories": [
+    {
+      "repository": "your-org/your-project",
+      "branch": "main",
+      "board_issue": 1,
+      "verify": ["python3", "-m", "unittest"]
+    }
+  ]
+}
