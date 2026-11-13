@@ -319,7 +319,73 @@ message on stdin and the event name in `AGENTORCH_EVENT`.
 
 **Check:** `agentorch notify test "hello from agentorch"` arrives on the phone.
 
-## 6. Troubleshooting
+## 6. Linear mode: a mega doc, tickets and server sub-agents
+
+Use this instead of GitHub issues when the team tracks work in Linear. GitHub keeps
+the code and pull requests. Linear holds the tickets and the Agent Board.
+
+### How it works
+
+1. The project's mega doc (a markdown file in the repository) is the source of truth.
+2. `agentorch plan make` sends it to a small model through any OpenAI-compatible
+   endpoint, together with the list of agents. The model proposes tickets, each with
+   acceptance criteria, dependencies, a priority and an agent. The summary is sent to
+   the owner's phone.
+3. The owner approves ("approve plan" to Hermes, or `agentorch plan apply`). The
+   tickets are created in Todo with the label `agent:<name>`, and dependencies
+   become "blocks" relations. Applying twice never duplicates tickets.
+4. The **orchestrator** on the server is plain code, not an LLM. For each
+   **sub-agent** in `subagents`, it claims that agent's next Todo ticket that has no
+   unfinished blockers, moves it to In Progress, and runs it in its own sandboxed
+   worktree. Up to `worker.max_parallel` run at once, one ticket per sub-agent at a
+   time. Each finished ticket gets:
+   - a draft PR from the branch `eng-12-<slug>`, titled `[ENG-12] ...` with
+     `Fixes ENG-12` in the body, which Linear's GitHub integration links
+   - a move to In Review, a ticket comment and a board post
+   - a phone notification
+   A failed attempt goes to Backlog with the error. Moving it to Todo retries it.
+5. **Teammates' local agents** take tickets labelled with their own agent name with
+   `agentorch ticket next` and finish with `agentorch ticket done ENG-12 --pr URL`.
+6. **The board** is a Linear ticket labelled `board` ("Agent Board"). Its comments
+   are the chat. Agents mention each other by agent name (`@oracle-backend`).
+
+### Setup
+
+1. In Linear: create a personal API key (Settings, under Security & access, then
+   Personal API keys). On the server, save it with
+   `install -m 600 /dev/stdin ~/.config/agentorch/linear-key`.
+   Each teammate creates their own key and exports `LINEAR_API_KEY`.
+2. Turn on Linear's GitHub integration for the code repository, so branches and PRs
+   that mention ticket IDs are linked.
+3. In the project checkout:
+   `LINEAR_API_KEY=... agentorch init --linear ENG --agents oracle-backend oracle-frontend priya-codex`.
+   This creates the labels and the Agent Board ticket, then writes `.agentorch.json`
+   (`{"linear": {"team": "ENG", "board_issue": "ENG-1"}}`), the Linear `AGENTS.md`
+   and the Claude hooks. Commit them.
+4. On the server, start from `deploy/config.example.linear.json`:
+
+| Key | Meaning |
+|---|---|
+| `linear.team` | Team key, the prefix of ticket IDs |
+| `linear.api_key_file` / `api_key_env` | Defaults `~/.config/agentorch/linear-key` / `LINEAR_API_KEY` |
+| `linear.board_issue` | The Agent Board ticket, e.g. `ENG-1` |
+| `linear.review_state` | State used when the PR is open (default `In Review`; falls back to the first started state) |
+| `subagents.<name>` | An agent spec, as for `agent` (`type`, `command`, `model`, `env`, ...), plus `description` (what the planner assigns to it), `instructions` (added to every prompt) and `repository` (if not the only configured one) |
+| `worker.max_parallel` | Tickets running at once (default 2; budget about 1 CPU and 1.5 GB of RAM each) |
+| `planner.base_url`, `planner.model` | OpenAI-compatible endpoint and a small model |
+| `planner.api_key_file` / `api_key_env` | Defaults `~/.config/agentorch/planner-key` / `PLANNER_API_KEY`. None needed for a local Ollama. |
+| `planner.megadoc` | Path of the doc in the repository. `plan make --doc FILE` uses a local file instead. |
+| `planner.extra_agents` | Teammates' agent names the planner may also assign |
+| `planner.max_tickets` | Default 25 |
+
+5. Add `"plan_ready"` to `notify_events` if you set that list explicitly.
+6. `agentorch doctor` should show the Linear user, the team and its states, and the
+   sub-agents. Then run `systemctl --user restart agentorch-worker`.
+
+**Check:** `agentorch ticket new "Add a hello.txt containing hi" --agent oracle-backend`.
+Within a minute it moves to In Progress, then to In Review with a draft PR link.
+
+## 7. Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|

@@ -1,0 +1,69 @@
+{
+  "identity": {
+    "human": "Sam",
+    "agent": "Oracle"
+  },
+  "approvers": [
+    "your-github-login"
+  ],
+  "github": {
+    "auth": "token",
+    "token_file": "~/.config/agentorch/github-token"
+  },
+  "linear": {
+    "team": "ENG",
+    "api_key_file": "~/.config/agentorch/linear-key",
+    "board_issue": "ENG-1",
+    "review_state": "In Review"
+  },
+  "agent": {
+    "type": "banyancode",
+    "command": "banyancode",
+    "model": "opencode/beam-free",
+    "timeout": 900
+  },
+  "subagents": {
+    "oracle-backend": {
+      "description": "APIs, database, server code",
+      "instructions": "Own the backend."
+    },
+    "oracle-frontend": {
+      "description": "UI pages and components",
+      "instructions": "Own the frontend."
+    }
+  },
+  "planner": {
+    "base_url": "https://openrouter.ai/api/v1",
+    "model": "a-small-model",
+    "api_key_file": "~/.config/agentorch/planner-key",
+    "megadoc": "MEGADOC.md",
+    "extra_agents": [
+      "teammate-codex"
+    ],
+    "max_tickets": 25
+  },
+  "sandbox": {
+    "type": "bwrap"
+  },
+  "worker": {
+    "state_dir": "~/.local/share/agentorch",
+    "poll": 30,
+    "max_parallel": 2
+  },
+  "notify": [
+    {
+      "type": "telegram",
+      "env_file": "~/.hermes/.env"
+    }
+  ],
+  "repositories": [
+    {
+      "repository": "your-org/your-project",
+      "branch": "main",
+      "verify": [
+        "npm",
+        "test"
+      ]
+    }
+  ]
+}
