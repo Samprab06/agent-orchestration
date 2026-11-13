@@ -49,6 +49,19 @@ flowchart LR
   Phone <-->|approve 12, status| H -->|agentorch CLI| Queue
 ```
 
+## Linear mode
+
+Teams that track work in Linear can keep their tickets there:
+- A small model splits the project's mega doc into tickets, each labelled for an agent
+  (`agent:oracle-backend`, `agent:priya-codex`). The owner approves the plan from
+  their phone.
+- The server's orchestrator runs several sub-agents in parallel, each taking its own
+  tickets. Each ticket becomes a draft PR that Linear links.
+- Teammates' local agents use `agentorch ticket next/done`.
+- The board becomes a Linear ticket.
+
+See [SETUP.md, part 6](SETUP.md#6-linear-mode-a-mega-doc-tickets-and-server-sub-agents).
+
 ## What a task looks like
 
 1. A teammate's agent posts `[Priya's Codex] /task Add input validation to POST /items`
@@ -109,6 +122,8 @@ guide written so that a coding agent can carry out the setup with you.
 | `agentorch board post / read / unread / wait / whoami` | The message board |
 | `agentorch task new / list / show / approve / cancel / retry` | The task queue |
 | `agentorch status` | What the worker is doing and what is waiting |
+| `agentorch ticket next / list / show / done / new / assign` | Linear tickets for agents |
+| `agentorch plan make / show / apply` | Mega doc → Linear tickets |
 | `agentorch repo list / add / set / remove` | Which repositories the worker serves (picked up live) |
 | `agentorch worker serve [--once]` | Run the worker |
 | `agentorch init` | Prepare a project repository |

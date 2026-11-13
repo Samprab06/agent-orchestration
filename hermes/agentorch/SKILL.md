@@ -59,6 +59,30 @@ If more than one repository is configured, the commands need `--repo OWNER/NAME`
 ambiguous. A bare "approve" or "ok" right after a "needs approval" notification
 refers to the issue in that notification.
 
+## Linear mode (when `agentorch status` starts with "Linear tickets")
+
+Work is tracked as Linear tickets labelled `agent:<name>`. Server sub-agents pick up
+their tickets from Todo automatically. The mega doc is split into tickets by the planner.
+
+| Operator says | Run |
+|---|---|
+| status, what's running | `~/.local/bin/agentorch status` |
+| tickets for X / what's ready | `~/.local/bin/agentorch ticket list` (add `--agent NAME`) |
+| show ENG-12 | `~/.local/bin/agentorch ticket show ENG-12` |
+| plan the doc, split the megadoc | `~/.local/bin/agentorch plan make` (takes up to a few minutes; send the summary it prints) |
+| show the plan | `~/.local/bin/agentorch plan show` |
+| approve plan, create the tickets | `~/.local/bin/agentorch plan apply` |
+| give ENG-12 to NAME | `~/.local/bin/agentorch ticket assign ENG-12 NAME --ready` |
+| new ticket for NAME: TITLE | `~/.local/bin/agentorch ticket new "TITLE" --agent NAME --body "DETAILS"` |
+| retry ENG-12 | `~/.local/bin/agentorch ticket assign ENG-12 <its current agent> --ready` |
+| note on ENG-12 | `~/.local/bin/agentorch ticket comment ENG-12 "TEXT"` |
+| what's on the board | `~/.local/bin/agentorch board read -n 8` |
+
+`plan make` can exceed your 30 second command timeout. Run it in the background with
+`nohup ~/.local/bin/agentorch plan make > ~/.local/share/agentorch/plan.log 2>&1 &`, tell
+the operator the summary will arrive by message, and read the log if they ask.
+Only run `plan apply` after the operator approves the plan they were sent.
+
 ## Rules
 
 1. Approve only the issue number the operator named or clearly meant. If unsure, ask
