@@ -449,29 +449,60 @@ def configure_logging(state_dir: Path, verbose: bool = True) -> None:
             root.addHandler(stream)
 
 
+def _mtime(path: Optional[Path]) -> float:
+    try:
+        return path.stat().st_mtime if path else 0.0
+    except OSError:
+        return 0.0
+
+
 def serve(config: Config, once: bool = False) -> int:
+    """Poll every configured repository. Reloads the config file when it changes."""
     import fcntl
     import signal as signals
 
-    if not config.repositories:
-        raise ValueError("Add at least one repository to the config")
     configure_logging(config.state_dir)
     stop = threading.Event()
     signals.signal(signals.SIGTERM, lambda *_: stop.set())
     signals.signal(signals.SIGINT, lambda *_: stop.set())
-    notify = Dispatcher(build_notifiers(config.notify), config.notify_events)
     with (config.state_dir / "worker.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("Another worker is already running with this state directory") from None
-        workers = [RepoWorker(config, repo, stop, notify) for repo in config.repositories.values()]
-        for worker in workers:
-            worker.recover()
-        log(f"worker online: {len(workers)} repositories, polling every {config.poll}s")
+        workers: List[RepoWorker] = []
+        loaded = -1.0
+
+        def load(new: Config) -> List[RepoWorker]:
+            for worker in workers:
+                worker.state.close()
+            notify = Dispatcher(build_notifiers(new.notify), new.notify_events)
+            result = [RepoWorker(new, repo, stop, notify) for repo in new.repositories.values()]
+            for worker in result:
+                worker.recover()
+            names = ", ".join(r.name for r in new.repositories.values()) or "none yet"
+            log(f"worker online: repositories: {names}; polling every {new.poll}s")
+            return result
+
+        workers, loaded = load(config), _mtime(config.path)
         failures: Dict[str, int] = {}
         due: Dict[str, float] = {}
         while not stop.is_set():
+            current = _mtime(config.path)
+            if config.path and current != loaded:
+                loaded = current
+                try:
+                    fresh = Config.load(config.path)
+                except (ValueError, OSError) as error:
+                    log(f"config change ignored: {error}")
+                else:
+                    if fresh.state_dir != config.state_dir:
+                        log("config change: worker.state_dir needs a restart; keeping the old one")
+                        fresh.state_dir = config.state_dir
+                    config = fresh
+                    workers = load(config)
+                    failures.clear()
+                    due.clear()
             for worker in workers:
                 name = worker.repo.name
                 if stop.is_set() or time.monotonic() < due.get(name, 0):
@@ -479,7 +510,7 @@ def serve(config: Config, once: bool = False) -> int:
                 try:
                     worker.prepare()
                     worker.tick()
-                    if failures.get(name):
+                    if failures.get(name, 0) >= 3:
                         worker.say("worker_error", "recovered")
                     failures[name] = 0
                 except (ValueError, RuntimeError) + TRANSIENT as error:

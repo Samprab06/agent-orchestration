@@ -26,7 +26,7 @@ LOGIN_RE = re.compile(r"^[A-Za-z0-9-]+(\[bot\])?$")
 AUTO_APPROVE = ("none", "approvers", "all")
 AGENT_TYPES = ("banyancode", "opencode", "claude", "codex", "command")
 SANDBOX_TYPES = ("bwrap", "none")
-NOTIFY_TYPES = ("command", "signal-cli", "stdout")
+NOTIFY_TYPES = ("telegram", "signal-cli", "command", "stdout")
 EVENTS = (
     "task_waiting", "task_started", "task_review",
     "task_failed", "task_cancelled", "board_mention", "worker_error",

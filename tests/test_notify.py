@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 from agentorch.config import Config
 from agentorch.github import provider_for
-from agentorch.notify import (CommandNotifier, Dispatcher, SignalCliNotifier, build, read_env_file,
-                              signal_settings)
+from agentorch.notify import (CommandNotifier, Dispatcher, SignalCliNotifier, TelegramNotifier, build,
+                              read_env_file, signal_settings, telegram_settings)
 
 
 class FakeSignal(BaseHTTPRequestHandler):
@@ -83,6 +83,66 @@ class SignalTests(unittest.TestCase):
         self.addCleanup(setattr, FakeSignal, "fail", False)
         with self.assertRaises(RuntimeError):
             notifier.send("x", "y")
+
+
+class FakeTelegram(BaseHTTPRequestHandler):
+    received = []
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeTelegram.received.append((self.path, body))
+        if body["chat_id"] == "bad":
+            data, code = json.dumps({"ok": False, "description": "Bad Request: chat not found"}).encode(), 400
+        else:
+            data, code = json.dumps({"ok": True, "result": {}}).encode(), 200
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
+class TelegramTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env = Path(self.tmp.name) / ".env"
+        self.env.write_text("TELEGRAM_BOT_TOKEN=123:SECRET\nTELEGRAM_ALLOWED_USERS=111, 222\n"
+                            "ANTHROPIC_API_KEY=not-read\n")
+        for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL", "TELEGRAM_ALLOWED_USERS"):
+            os.environ.pop(key, None)
+
+    def test_settings_from_hermes_env(self):
+        self.assertEqual(telegram_settings({"env_file": str(self.env)}),
+                         {"token": "123:SECRET", "chat_ids": ["111"]})
+        with open(self.env, "a") as f:
+            f.write("TELEGRAM_HOME_CHANNEL=-100999\n")
+        self.assertEqual(telegram_settings({"env_file": str(self.env)})["chat_ids"], ["-100999"])
+        self.assertEqual(telegram_settings({"env_file": str(self.env), "chat_ids": [5]})["chat_ids"], ["5"])
+
+    def test_missing_settings(self):
+        with self.assertRaises(ValueError):
+            build([{"type": "telegram", "env_file": str(Path(self.tmp.name) / "missing")}])
+
+    def test_send_and_errors_hide_the_token(self):
+        server = HTTPServer(("127.0.0.1", 0), FakeTelegram)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        FakeTelegram.received.clear()
+        api = f"http://127.0.0.1:{server.server_port}"
+        [notifier] = build([{"type": "telegram", "env_file": str(self.env), "api": api}])
+        notifier.send("task_review", "x" * 5000)
+        path, body = FakeTelegram.received[0]
+        self.assertEqual(path, "/bot123:SECRET/sendMessage")
+        self.assertEqual(body["chat_id"], "111")
+        self.assertEqual(len(body["text"]), 4003)
+        bad = TelegramNotifier("123:SECRET", ["bad"], api)
+        with self.assertRaises(RuntimeError) as caught:
+            bad.send("x", "y")
+        self.assertIn("chat not found", str(caught.exception))
+        self.assertNotIn("SECRET", str(caught.exception))
 
 
 class DispatcherTests(unittest.TestCase):

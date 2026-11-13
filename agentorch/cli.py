@@ -307,6 +307,88 @@ def cmd_notify(args: argparse.Namespace) -> int:
         return fail(str(error))
 
 
+# --- repositories ------------------------------------------------------------------
+
+def write_config(path: Path, data: dict) -> None:
+    Config(data, path)  # validate before touching the file
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def cmd_repo(args: argparse.Namespace) -> int:
+    """Edit the operator config's repository list. A running worker reloads it."""
+    import shlex
+    try:
+        config = load_config(args, required=True)
+        data = json.loads(config.path.read_text(encoding="utf-8"))
+        repos = data.setdefault("repositories", [])
+        if args.repo_cmd == "list":
+            if not repos:
+                print("No repositories configured. Add one with: agentorch repo add OWNER/NAME")
+            for entry in repos:
+                extras = [f"{k}={v}" for k, v in entry.items() if k not in ("repository",)]
+                print(f"{entry['repository']}  " + " ".join(extras))
+            return 0
+        name = args.name
+        if not valid_repo(name):
+            return fail(f"Repository must use OWNER/NAME: {name!r}")
+        index = next((i for i, e in enumerate(repos) if e.get("repository", "").lower() == name.lower()), None)
+        if args.repo_cmd == "remove":
+            if index is None:
+                return fail(f"{name} is not configured")
+            repos.pop(index)
+            write_config(config.path, data)
+            print(f"removed {name}. Its local state stays under {config.state_dir}.")
+            return 0
+        if args.repo_cmd == "add" and index is not None:
+            return fail(f"{name} is already configured; use agentorch repo set")
+        if args.repo_cmd == "set" and index is None:
+            return fail(f"{name} is not configured; use agentorch repo add")
+        entry = repos[index] if index is not None else {"repository": name}
+        if args.branch:
+            entry["branch"] = args.branch
+        if args.board_issue is not None:
+            if args.board_issue == 0:
+                entry.pop("board_issue", None)
+            else:
+                entry["board_issue"] = args.board_issue
+        if args.verify is not None:
+            if args.verify.strip():
+                entry["verify"] = shlex.split(args.verify)
+            else:
+                entry.pop("verify", None)
+        if args.auto_approve:
+            entry["auto_approve"] = args.auto_approve
+        if args.agent:
+            entry.setdefault("agent", {})["type"] = args.agent
+        if index is None:
+            entry.setdefault("branch", "main")
+            repos.append(entry)
+        notes = []
+        try:
+            github = GitHub(name, provider_for(Config(data, config.path), name))
+            info = github.get("")
+            notes.append(f"access ok (default branch {info.get('default_branch')})")
+            if "board_issue" not in entry and args.board_issue is None:
+                try:
+                    entry["board_issue"] = resolve_issue(github)
+                    notes.append(f"board issue #{entry['board_issue']}")
+                except ValueError:
+                    notes.append("no board issue yet (run agentorch init in the project, then "
+                                 f"agentorch repo set {name} --board-issue N)")
+        except ERRORS as error:
+            notes.append(f"WARNING: cannot reach {name} with the worker's credentials: {error}")
+        write_config(config.path, data)
+        print(f"{'added' if index is None else 'updated'} {name}: " + "; ".join(notes))
+        print("The running worker picks this up within one poll interval.")
+        return 0
+    except ERRORS as error:
+        return fail(str(error))
+
+
 # --- parser ----------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -384,6 +466,22 @@ def build_parser() -> argparse.ArgumentParser:
     serve = worker_cmds.add_parser("serve", help="Poll configured repositories and run approved tasks")
     serve.add_argument("--once", action="store_true", help="Run one polling pass and exit")
     worker.set_defaults(func=cmd_worker)
+
+    repo = commands.add_parser("repo", help="Repositories the worker serves (edits the config)")
+    repo_cmds = repo.add_subparsers(dest="repo_cmd", required=True)
+    repo_cmds.add_parser("list", help="Show configured repositories")
+    for name in ("add", "set", "remove"):
+        sub = repo_cmds.add_parser(name, help={"add": "Start serving a repository",
+                                               "set": "Change a repository's settings",
+                                               "remove": "Stop serving a repository"}[name])
+        sub.add_argument("name", metavar="OWNER/NAME")
+        if name != "remove":
+            sub.add_argument("--branch", help="Base branch (default main)")
+            sub.add_argument("--board-issue", type=int, help="Board issue number (0 clears)")
+            sub.add_argument("--verify", help='Test command, e.g. "npm test" ("" clears)')
+            sub.add_argument("--auto-approve", choices=("none", "approvers", "all"))
+            sub.add_argument("--agent", choices=("banyancode", "opencode", "claude", "codex", "command"))
+    repo.set_defaults(func=cmd_repo)
 
     notify = commands.add_parser("notify", help="Notifications")
     notify_cmds = notify.add_subparsers(dest="notify_cmd", required=True)

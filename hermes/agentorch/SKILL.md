@@ -1,6 +1,6 @@
 ---
 name: agentorch
-description: "Control the agentorch coding worker: task status, approvals, new tasks, cancel/retry, and the team board."
+description: "Control the agentorch coding worker: status, approvals, new tasks, cancel/retry, which repositories it serves, and the team board."
 version: 1.0.0
 author: agentorch
 license: MIT
@@ -12,9 +12,9 @@ metadata:
 
 # agentorch: the coding worker on this server
 
-The operator uses this skill from their phone to check on and approve work for the
+The operator uses this skill from their phone (Telegram) to check on and approve work for the
 coding agent that runs on this server. GitHub issues are the tasks. The worker runs
-an approved task, opens a draft pull request, and sends its own Signal updates.
+an approved task, opens a draft pull request, and sends its own Telegram updates.
 You never edit code yourself here; you run the `agentorch` command and report back.
 
 Run every command with the terminal tool, using the full path
@@ -36,14 +36,23 @@ teammates posted on the board. Typical messages: "status", "what's running",
 | status, what's going on | `~/.local/bin/agentorch status` |
 | list tasks, queue | `~/.local/bin/agentorch task list` |
 | details on #N | `~/.local/bin/agentorch task show N` |
-| approve N, ok N, go N | `~/.local/bin/agentorch task approve N --note "approved from Signal"` |
+| approve N, ok N, go N | `~/.local/bin/agentorch task approve N --note "approved from phone"` |
 | new task: TITLE (details) | `~/.local/bin/agentorch task new "TITLE" --body "DETAILS"` |
 | new task ... and run it now | add `--approve` to the line above |
-| cancel N, stop N | `~/.local/bin/agentorch task cancel N --note "cancelled from Signal"` |
+| cancel N, stop N | `~/.local/bin/agentorch task cancel N --note "cancelled from phone"` |
 | retry N | `~/.local/bin/agentorch task retry N` |
 | what's on the board | `~/.local/bin/agentorch board read -n 8` |
 | post to the board / tell the team ... | `~/.local/bin/agentorch board post --signature "OPERATOR's phone" "TEXT"` |
 | is everything healthy | `~/.local/bin/agentorch doctor` and `systemctl --user is-active agentorch-worker` |
+| which repos are you watching | `~/.local/bin/agentorch repo list` |
+| work on / watch OWNER/NAME | `~/.local/bin/agentorch repo add OWNER/NAME` (add `--branch B`, `--verify "npm test"` or `--board-issue N` if given) |
+| change settings for a repo | `~/.local/bin/agentorch repo set OWNER/NAME --verify "pytest -q"` (or `--branch`, `--board-issue`, `--auto-approve none|approvers|all`, `--agent`) |
+| stop watching OWNER/NAME | `~/.local/bin/agentorch repo remove OWNER/NAME` |
+
+The worker reloads its config within a minute after `repo add/set/remove`; no
+restart is needed. `repo add` reports whether the worker's GitHub credentials can
+reach the repository. If it warns that they cannot, tell the operator that the
+GitHub App (or token) needs access to that repository.
 
 If more than one repository is configured, the commands need `--repo OWNER/NAME`.
 `status` lists the repositories; ask which one if the message doesn't say and it is
@@ -61,14 +70,17 @@ refers to the issue in that notification.
    details, acceptance criteria and file names in `--body`. Quote shell arguments
    carefully; never put the operator's text unquoted into a command.
 5. Do not run any other command that changes the repository, the worker's files or
-   its service. Restarting the worker (`systemctl --user restart agentorch-worker`)
-   only on an explicit request.
-6. If a command fails, send the first line of the error and suggest
+   its service, and never edit `~/.config/agentorch/` by hand; use `agentorch repo`.
+   Restart the worker (`systemctl --user restart agentorch-worker`) only on an
+   explicit request.
+6. Confirm the exact `OWNER/NAME` before `repo add` or `repo remove`, and only
+   use `--auto-approve all` if the operator asked for it by name.
+7. If a command fails, send the first line of the error and suggest
    `agentorch doctor`.
 
 ## Notifications you will see
 
-The worker sends its own messages, prefixed with the repository name, for: a task
+The worker sends its own messages through this same Telegram bot, prefixed with the repository name, for: a task
 waiting for approval, a task started, a draft PR ready, a failure or cancellation, a
 teammate mentioning the operator on the board, and a worker that keeps failing. When
 the operator replies to one, use the issue number in it.

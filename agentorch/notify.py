@@ -3,6 +3,12 @@
 Notifiers are configured as a list. Failures are logged and never stop the
 worker.
 
+* ``telegram``: send through the Telegram Bot API. With
+  ``"env_file": "~/.hermes/.env"`` it reuses the bot Hermes' Telegram gateway
+  runs, reading only ``TELEGRAM_BOT_TOKEN``, ``TELEGRAM_HOME_CHANNEL`` and
+  ``TELEGRAM_ALLOWED_USERS``. Sending does not interfere with Hermes receiving
+  messages. Messages go to ``chat_ids``, else the home channel, else the
+  first allowed user (a user's ID is their private chat with the bot).
 * ``signal-cli``: send through a signal-cli daemon's JSON-RPC HTTP endpoint,
   the same daemon Hermes uses for its Signal gateway. With
   ``"env_file": "~/.hermes/.env"`` it reuses Hermes' Signal settings and only
@@ -21,6 +27,7 @@ import logging
 import os
 import subprocess
 from typing import Any, Callable, Dict, Iterable, List, Optional
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 LOG = logging.getLogger("agentorch.notify")
@@ -51,6 +58,42 @@ class CommandNotifier(Notifier):
         env = dict(os.environ, AGENTORCH_EVENT=event)
         subprocess.run(self.argv, input=message, text=True, env=env, timeout=self.timeout,
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+
+class TelegramNotifier(Notifier):
+    LIMIT = 4000  # Telegram allows 4096 characters per message
+
+    def __init__(self, token: str, chat_ids: Iterable[str], api: str = "https://api.telegram.org",
+                 timeout: int = 20):
+        if not token:
+            raise ValueError("telegram notifier needs a bot token (TELEGRAM_BOT_TOKEN)")
+        self.chat_ids = [str(c) for c in chat_ids if str(c).strip()]
+        if not self.chat_ids:
+            raise ValueError("telegram notifier needs chat_ids, TELEGRAM_HOME_CHANNEL or TELEGRAM_ALLOWED_USERS")
+        self._token = token
+        self.api = api.rstrip("/")
+        self.timeout = timeout
+
+    def send(self, event: str, message: str) -> None:
+        text = message if len(message) <= self.LIMIT else message[:self.LIMIT] + "..."
+        for chat in self.chat_ids:
+            data = json.dumps({"chat_id": chat, "text": text, "disable_web_page_preview": True}).encode()
+            request = Request(f"{self.api}/bot{self._token}/sendMessage", data=data, method="POST",
+                              headers={"Content-Type": "application/json"})
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    body = json.loads(response.read() or b"{}")
+            except HTTPError as error:
+                try:
+                    detail = json.loads(error.read() or b"{}").get("description", "")
+                except ValueError:
+                    detail = ""
+                # Never include the URL: it contains the bot token.
+                raise RuntimeError(f"telegram: HTTP {error.code} {detail}".strip()) from None
+            except (URLError, OSError) as error:
+                raise RuntimeError(f"telegram: {getattr(error, 'reason', error)}") from None
+            if not body.get("ok"):
+                raise RuntimeError(f"telegram: {body.get('description', 'send failed')}")
 
 
 class SignalCliNotifier(Notifier):
@@ -90,6 +133,7 @@ class SignalCliNotifier(Notifier):
 
 
 SIGNAL_KEYS = ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT", "SIGNAL_HOME_CHANNEL", "SIGNAL_ALLOWED_USERS")
+TELEGRAM_KEYS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL", "TELEGRAM_ALLOWED_USERS")
 
 
 def read_env_file(path: str, keys: Iterable[str] = SIGNAL_KEYS) -> Dict[str, str]:
@@ -111,6 +155,19 @@ def read_env_file(path: str, keys: Iterable[str] = SIGNAL_KEYS) -> Dict[str, str
             value = value.split(" #", 1)[0].strip().strip("'\"")
             values[key] = value
     return values
+
+
+def telegram_settings(spec: Dict[str, Any]) -> Dict[str, Any]:
+    env = {k: os.environ[k] for k in TELEGRAM_KEYS if os.environ.get(k)}
+    if spec.get("env_file"):
+        env.update(read_env_file(spec["env_file"], TELEGRAM_KEYS))
+    chats = [str(c) for c in (spec.get("chat_ids") or ([spec["chat_id"]] if spec.get("chat_id") else []))]
+    if not chats:
+        home = env.get("TELEGRAM_HOME_CHANNEL", "").strip()
+        allowed = [u.strip() for u in env.get("TELEGRAM_ALLOWED_USERS", "").split(",") if u.strip()]
+        chats = [home] if home else allowed[:1]
+    token = spec.get("bot_token") or env.get("TELEGRAM_BOT_TOKEN", "")
+    return {"token": token, "chat_ids": chats}
 
 
 def signal_settings(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -143,6 +200,10 @@ def build(specs: List[Dict[str, Any]]) -> List[Notifier]:
             result.append(StdoutNotifier())
         elif kind == "command":
             result.append(CommandNotifier(spec.get("argv") or [], int(spec.get("timeout", 30))))
+        elif kind == "telegram":
+            settings = telegram_settings(spec)
+            result.append(TelegramNotifier(settings["token"], settings["chat_ids"],
+                                           spec.get("api", "https://api.telegram.org")))
         elif kind == "signal-cli":
             settings = signal_settings(spec)
             result.append(SignalCliNotifier(settings["url"], settings["account"],
