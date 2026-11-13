@@ -30,6 +30,7 @@ class Post:
     body: str
     mention: bool = False
     url: str = ""
+    association: str = ""
 
     def render(self) -> str:
         flag = " ** MENTION **" if self.mention else ""
@@ -133,7 +134,8 @@ class Board:
         login = (raw.get("user") or {}).get("login", "ghost")
         body = (raw.get("body") or "").replace("\r", "")
         mention = flag and login.casefold() != self.login.casefold() and mentions(body, self.handles())
-        return Post(int(raw["id"]), login, raw["created_at"], body, mention, raw.get("html_url", ""))
+        return Post(int(raw["id"]), login, raw["created_at"], body, mention, raw.get("html_url", ""),
+                    raw.get("author_association", ""))
 
     def last(self, count: int = 10) -> List[Post]:
         total = self.github.issue(self.issue).get("comments", 0)
@@ -149,6 +151,11 @@ class Board:
     def since(self, timestamp: str) -> List[Post]:
         rows = self.github.paginate(f"/issues/{self.issue}/comments", since=timestamp)
         return [self._post(r) for r in rows]
+
+    def skip_to_latest(self) -> None:
+        """Mark everything already on the board as read."""
+        latest = self.last(1)
+        self._set_cursor(latest[-1] if latest else Post(0, "", "1970-01-01T00:00:00Z", ""))
 
     def unread(self, mark: bool = True) -> List[Post]:
         """Posts by others since the last check. The first call shows the last 10 for context."""

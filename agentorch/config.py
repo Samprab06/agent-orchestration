@@ -28,7 +28,7 @@ AGENT_TYPES = ("banyancode", "opencode", "claude", "codex", "command")
 SANDBOX_TYPES = ("bwrap", "none")
 NOTIFY_TYPES = ("command", "signal-cli", "stdout")
 EVENTS = (
-    "task_waiting", "task_approved", "task_started", "task_review",
+    "task_waiting", "task_started", "task_review",
     "task_failed", "task_cancelled", "board_mention", "worker_error",
 )
 PROJECT_FILE = ".agentorch.json"
@@ -161,6 +161,8 @@ class Config:
         self.min_free_bytes: int = int(float(worker.get("min_free_gb", 2)) * 1024 ** 3)
         self.task_trigger: str = worker.get("task_trigger", "/task")
         self.watch_board: bool = bool(worker.get("watch_board", True))
+        self.git_name: str = worker.get("git_name", "agentorch")
+        self.git_email: str = worker.get("git_email", "agentorch@users.noreply.github.com")
 
         notify = data.get("notify") or []
         if not isinstance(notify, list):
