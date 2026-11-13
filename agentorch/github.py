@@ -166,8 +166,13 @@ def provider_for(config: Any, repository: str) -> TokenProvider:
     if config.github_auth == "gh":
         return GhCliToken()
     token = os.environ.get(config.token_env)
+    if not token and config.token_file.is_file():
+        info = config.token_file.stat()
+        if os.name == "posix" and info.st_mode & 0o077:
+            raise ValueError(f"{config.token_file} must be owner-only (chmod 600)")
+        token = config.token_file.read_text(encoding="utf-8").strip()
     if not token:
-        raise ValueError(f"Set {config.token_env} to a GitHub token (github.auth is token)")
+        raise ValueError(f"Put a GitHub token in {config.token_file} (chmod 600) or set {config.token_env}")
     return StaticToken(token)
 
 

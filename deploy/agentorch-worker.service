@@ -1,0 +1,26 @@
+[Unit]
+Description=agentorch coding worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=AGENTORCH_CONFIG=%h/.config/agentorch/config.json
+# GH_TOKEN and model API keys. Keep this file mode 0600.
+EnvironmentFile=-%h/.config/agentorch/worker.env
+ExecStart=%h/.local/bin/agentorch worker serve
+Restart=on-failure
+RestartSec=15s
+KillMode=mixed
+TimeoutStopSec=40s
+# Covers the worker, the agent and verification together.
+CPUQuota=200%
+MemoryHigh=1536M
+MemoryMax=2G
+TasksMax=256
+Nice=5
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

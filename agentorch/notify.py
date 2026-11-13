@@ -4,7 +4,11 @@ Notifiers are configured as a list. Failures are logged and never stop the
 worker.
 
 * ``signal-cli``: send through a signal-cli daemon's JSON-RPC HTTP endpoint,
-  the same daemon Hermes uses for its Signal gateway.
+  the same daemon Hermes uses for its Signal gateway. With
+  ``"env_file": "~/.hermes/.env"`` it reuses Hermes' Signal settings and only
+  reads the ``SIGNAL_*`` keys from that file. Messages go to the explicit
+  ``recipients``/``group_id``, else ``SIGNAL_HOME_CHANNEL``, else the first
+  of ``SIGNAL_ALLOWED_USERS``, else the account itself (Note to Self).
 * ``command``: run any program with the message on stdin (``AGENTORCH_EVENT``
   holds the event name), e.g. a script that calls another messenger.
 * ``stdout``: print, for testing.
@@ -70,6 +74,8 @@ class SignalCliNotifier(Notifier):
             params["account"] = self.account
         if self.group_id:
             params["groupId"] = self.group_id
+        elif self.account and self.recipients == [self.account]:
+            params["noteToSelf"] = True  # signal-cli linked to the operator's own number
         else:
             params["recipient"] = self.recipients
         return {"jsonrpc": "2.0", "method": "send", "params": params, "id": next(_ids)}
@@ -83,6 +89,52 @@ class SignalCliNotifier(Notifier):
             raise RuntimeError(f"signal-cli: {body['error'].get('message', body['error'])}")
 
 
+SIGNAL_KEYS = ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT", "SIGNAL_HOME_CHANNEL", "SIGNAL_ALLOWED_USERS")
+
+
+def read_env_file(path: str, keys: Iterable[str] = SIGNAL_KEYS) -> Dict[str, str]:
+    """Read only the named keys from a dotenv file such as ``~/.hermes/.env``."""
+    wanted, values = set(keys), {}
+    try:
+        text = open(os.path.expanduser(path), encoding="utf-8").read()
+    except OSError:
+        return values
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in wanted:
+            value = value.split(" #", 1)[0].strip().strip("'\"")
+            values[key] = value
+    return values
+
+
+def signal_settings(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Explicit settings win, then the env file (Hermes' .env), then the environment."""
+    env = {k: os.environ[k] for k in SIGNAL_KEYS if os.environ.get(k)}
+    if spec.get("env_file"):
+        env.update(read_env_file(spec["env_file"]))
+    recipients = spec.get("recipients") or ([spec["recipient"]] if spec.get("recipient") else [])
+    group_id = spec.get("group_id")
+    if not recipients and not group_id:
+        home = env.get("SIGNAL_HOME_CHANNEL", "")
+        allowed = [u.strip() for u in env.get("SIGNAL_ALLOWED_USERS", "").split(",") if u.strip()]
+        target = home or (allowed[0] if allowed else env.get("SIGNAL_ACCOUNT", ""))
+        if target.startswith("group."):
+            group_id = target[len("group."):]
+        elif target:
+            recipients = [target]
+    return {
+        "url": spec.get("url") or env.get("SIGNAL_HTTP_URL") or "http://127.0.0.1:8080",
+        "account": spec.get("account") or env.get("SIGNAL_ACCOUNT"),
+        "recipients": recipients, "group_id": group_id,
+    }
+
+
 def build(specs: List[Dict[str, Any]]) -> List[Notifier]:
     result: List[Notifier] = []
     for spec in specs:
@@ -92,10 +144,9 @@ def build(specs: List[Dict[str, Any]]) -> List[Notifier]:
         elif kind == "command":
             result.append(CommandNotifier(spec.get("argv") or [], int(spec.get("timeout", 30))))
         elif kind == "signal-cli":
-            recipients = spec.get("recipients") or ([spec["recipient"]] if spec.get("recipient") else [])
-            url = spec.get("url") or os.environ.get("SIGNAL_HTTP_URL", "http://127.0.0.1:8080")
-            account = spec.get("account") or os.environ.get("SIGNAL_ACCOUNT")
-            result.append(SignalCliNotifier(url, account, recipients, spec.get("group_id")))
+            settings = signal_settings(spec)
+            result.append(SignalCliNotifier(settings["url"], settings["account"],
+                                            settings["recipients"], settings["group_id"]))
     return result
 
 

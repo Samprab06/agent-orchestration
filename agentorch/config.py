@@ -125,6 +125,7 @@ class Config:
         self.app_id: Optional[int] = github.get("app_id")
         self.private_key = expand(github.get("private_key", "~/.config/agentorch/github-app.pem"))
         self.token_env: str = github.get("token_env", "GH_TOKEN")
+        self.token_file = expand(github.get("token_file", "~/.config/agentorch/github-token"))
         if self.github_auth == "app" and not isinstance(self.app_id, int):
             raise ConfigError("github.app_id is required when github.auth is app")
 
