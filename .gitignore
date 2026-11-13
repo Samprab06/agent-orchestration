@@ -1,5 +1,8 @@
 __pycache__/
 .env
 .venv/
-/bin/
+/banyancode-bin/
 /smoke.jsonl
+*.egg-info/
+build/
+dist/
