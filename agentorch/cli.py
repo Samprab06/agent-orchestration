@@ -54,14 +54,31 @@ def client(args: argparse.Namespace, config: Optional[Config], repo: str) -> Git
 
 # --- board ---------------------------------------------------------------------
 
-def make_board(args: argparse.Namespace) -> Board:
+def linear_settings(config: Optional[Config]) -> Optional[dict]:
+    from agentorch.linear import project_linear
+    project = project_linear()
+    if project:
+        return project
+    return config.linear if config is not None and config.linear else None
+
+
+def make_board(args: argparse.Namespace):
     config = load_config(args, required=False)
+    settings = linear_settings(config)
+    if settings and not getattr(args, "repo", None):
+        from agentorch.linear import LinearBoard, find_board, from_settings
+        linear = from_settings(settings)
+        issue = getattr(args, "issue", None) or os.environ.get("AGENTORCH_BOARD_ISSUE") \
+            or settings.get("board_issue") or find_board(linear)
+        signature = config.signature if config is not None and not os.environ.get("AGENTORCH_SIGNATURE") else None
+        return LinearBoard(linear, str(issue), cursor=getattr(args, "cursor", None), signature=signature)
     repo = target_repo(args, config)
     github = client(args, config, repo)
     configured = None
     if config is not None and repo.lower() in config.repositories:
         configured = config.repositories[repo.lower()].board_issue
-    issue = resolve_issue(github, getattr(args, "issue", None), configured)
+    explicit = getattr(args, "issue", None)
+    issue = resolve_issue(github, int(explicit) if explicit else None, configured)
     return Board(github, issue, cursor=getattr(args, "cursor", None))
 
 
@@ -88,7 +105,9 @@ def cmd_board(args: argparse.Namespace) -> int:
             for post in posts:
                 print(post.render())
         elif args.board_cmd == "whoami":
-            print(json.dumps({"login": board.login, "repository": board.github.repository,
+            where = getattr(getattr(board, "github", None), "repository", None) or \
+                f"linear:{getattr(board, 'linear').team_key}"
+            print(json.dumps({"login": board.login, "where": where,
                               "board_issue": board.issue, "cursor": board.cursor_name}))
         return 0
     except ERRORS as error:
@@ -111,7 +130,7 @@ def board_hook(args: argparse.Namespace) -> int:
     except ERRORS:
         return 0
     if posts:
-        print(f"New board posts (issue #{board.issue}):")
+        print(f"New board posts ({board.issue}):")
         for post in posts:
             print(post.render())
     return 0
@@ -127,8 +146,47 @@ def copy_template(source: Path, target: Path, force: bool) -> str:
     return f"wrote    {target}"
 
 
+def init_linear(args: argparse.Namespace) -> int:
+    """Board ticket and agent labels in Linear, plus the project files."""
+    from agentorch.linear import AGENT_PREFIX, BOARD_LABEL, Linear, api_key, find_board
+    linear = Linear(api_key(), args.linear)
+    team = linear.team()
+    print(f"team     {team['key']} ({team['name']}) as {linear.viewer().get('name')}")
+    linear.label_id(BOARD_LABEL)
+    for name in args.agents or []:
+        linear.label_id(AGENT_PREFIX + name.lower())
+        print(f"label    {AGENT_PREFIX}{name.lower()}")
+    try:
+        board = args.issue or find_board(linear)
+        print(f"exists   board {board}")
+    except ValueError:
+        body = (TEMPLATES / "github/ISSUE_TEMPLATE/message-board.md").read_text(encoding="utf-8")
+        created = linear.create_issue("Agent Board", body.split("---", 2)[2].strip(), labels=[BOARD_LABEL],
+                                      state_kind="started")
+        board = created["identifier"]
+        print(f"created  board {board}: {created['url']}")
+    root = git_root()
+    if root is None or args.no_files:
+        print(f'Add to .agentorch.json: {{"linear": {{"team": "{team["key"]}", "board_issue": "{board}"}}}}')
+        return 0
+    settings = project_settings()
+    settings["linear"] = {"team": team["key"], "board_issue": board}
+    (root / PROJECT_FILE).write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote    {root / PROJECT_FILE}")
+    for source, target in (("AGENTS-linear.md", "AGENTS.md"), ("CLAUDE.md", "CLAUDE.md"),
+                           ("claude/settings.json", ".claude/settings.json")):
+        print(copy_template(TEMPLATES / source, root / target, args.force))
+    print("Commit these files. Each teammate needs LINEAR_API_KEY (their own personal key).")
+    return 0
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """Prepare a project repository: labels, a pinned board issue, and agent instructions."""
+    if getattr(args, "linear", None):
+        try:
+            return init_linear(args)
+        except ERRORS + (RuntimeError,) as error:
+            return fail(str(error))
     try:
         config = load_config(args, required=False)
         repo = target_repo(args, config)
@@ -138,7 +196,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             print(f"{'created' if created else 'exists '}  label {name}")
         issue = None
         try:
-            issue = resolve_issue(github, args.issue)
+            issue = resolve_issue(github, int(args.issue) if args.issue else None)
         except ValueError:
             pass
         if issue is None:
@@ -206,14 +264,26 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         config = None
         check("operator config", False, str(error))
     try:
-        repo = target_repo(args, config)
-        check("repository", True, repo)
-        github = client(args, config, repo)
-        check("GitHub login", True, github.login())
         board = make_board(args)
-        check("board issue", True, f"#{board.issue}")
-    except ERRORS as error:
-        check("GitHub access", False, str(error))
+        check("board", True, str(board.issue))
+    except ERRORS + (RuntimeError,) as error:
+        check("board", False, str(error))
+    settings = None
+    try:
+        settings = linear_settings(config)
+    except ERRORS:
+        pass
+    if settings:
+        try:
+            from agentorch.linear import from_settings
+            linear = from_settings(settings)
+            team = linear.team()
+            check("Linear", True, f"{linear.viewer().get('name')} on team {team['key']}, "
+                  f"states: {', '.join(s['name'] for s in sorted(team['states']['nodes'], key=lambda s: s['position']))}")
+        except ERRORS + (RuntimeError,) as error:
+            check("Linear", False, str(error))
+    if config is not None and config.subagents:
+        check("sub-agents", True, ", ".join(f"{n} ({s.get('type')})" for n, s in config.subagents.items()))
     if config is not None:
         for repo in config.repositories.values():
             try:
@@ -275,6 +345,18 @@ def cmd_status(args: argparse.Namespace) -> int:
     from agentorch.worker import format_status, status
     try:
         config = load_config(args, required=True)
+        if config.linear:
+            from agentorch.dispatch import status_lines
+            from agentorch.linear import AGENT_PREFIX, from_settings
+            lines = status_lines(config)
+            if not args.local:
+                linear = from_settings(config.linear)
+                for name in config.subagents:
+                    ready = linear.issues(label=AGENT_PREFIX + name, state_types=("unstarted", "started"))
+                    for issue in ready:
+                        lines.append(f"  {issue['state']['name'].upper():8}{describe_ticket(issue)}")
+            print("\n".join(lines))
+            return 0
         if args.repo:
             config.repositories = {args.repo.lower(): config.repository(args.repo)}
         rows = status(config, include_queue=not args.local)
@@ -389,6 +471,120 @@ def cmd_repo(args: argparse.Namespace) -> int:
         return fail(str(error))
 
 
+# --- linear tickets and planning -----------------------------------------------------
+
+def linear_client(args: argparse.Namespace, config: Optional[Config]):
+    from agentorch.linear import Linear, api_key, from_settings
+    settings = linear_settings(config)
+    team = getattr(args, "team", None)
+    if team:
+        return Linear(api_key((settings or {}).get("api_key_file")), team)
+    if not settings:
+        raise ConfigError("No Linear settings: add {\"linear\": {\"team\": \"ENG\"}} to .agentorch.json "
+                          "or the operator config, or pass --team")
+    return from_settings(settings)
+
+
+def describe_ticket(issue: dict) -> str:
+    from agentorch.linear import agent_labels, blockers
+    waiting = blockers(issue)
+    extra = f" blocked by {', '.join(waiting)}" if waiting else ""
+    return (f"{issue['identifier']} [{issue['state']['name']}] {issue['title']} "
+            f"({', '.join(agent_labels(issue)) or 'unassigned'}){extra} {issue['url']}")
+
+
+def cmd_ticket(args: argparse.Namespace) -> int:
+    from agentorch.linear import AGENT_PREFIX, blockers, branch_name
+    try:
+        config = load_config(args, required=False)
+        linear = linear_client(args, config)
+        agent = getattr(args, "agent", None) or os.environ.get("AGENTORCH_AGENT")
+        if args.ticket_cmd == "list":
+            label = AGENT_PREFIX + agent if agent else None
+            types = ("unstarted", "started") if not args.all else ("backlog", "unstarted", "started")
+            for issue in linear.issues(label=label, state_types=types, first=100):
+                print(describe_ticket(issue))
+        elif args.ticket_cmd == "show":
+            issue = linear.issue(args.id)
+            print(describe_ticket(issue))
+            print(f"branch: {branch_name(issue)}\n\n{issue.get('description') or ''}")
+        elif args.ticket_cmd == "next":
+            if not agent:
+                return fail("Pass --agent NAME or set AGENTORCH_AGENT")
+            for issue in linear.issues(label=AGENT_PREFIX + agent):
+                if blockers(issue):
+                    continue
+                if not args.peek:
+                    linear.move(issue, "started")
+                    linear.comment(issue["id"], f"Picked up by `{agent}`.")
+                print(describe_ticket(issue))
+                print(f"branch: {branch_name(issue)}  (put {issue['identifier']} in the branch name and PR "
+                      f"so Linear links it)\n\n{issue.get('description') or ''}")
+                return 0
+            print(f"No ready tickets for {agent}.")
+        elif args.ticket_cmd == "done":
+            issue = linear.issue(args.id)
+            review = (config.linear or {}).get("review_state", "In Review") if config else "In Review"
+            moved = linear.move(issue, "started", review)
+            linear.comment(issue["id"], "Ready for review" + (f": {args.pr}" if args.pr else ".")
+                           + (f" ({agent})" if agent else ""))
+            print(f"{issue['identifier']} -> {moved}")
+        elif args.ticket_cmd == "new":
+            labels = [AGENT_PREFIX + agent] if agent else []
+            issue = linear.create_issue(" ".join(args.title), args.body or "", labels=labels,
+                                        state_kind="unstarted" if not args.backlog else "backlog")
+            print(f"{issue['identifier']} {issue['url']}")
+        elif args.ticket_cmd == "assign":
+            issue = linear.issue(args.id)
+            old = [l["name"] for l in issue["labels"]["nodes"] if l["name"].lower().startswith(AGENT_PREFIX)]
+            linear.set_labels(issue, add=[AGENT_PREFIX + args.to], remove=old)
+            if args.ready:
+                linear.move(issue, "unstarted")
+            print(f"{issue['identifier']} -> {AGENT_PREFIX + args.to}")
+        elif args.ticket_cmd == "comment":
+            issue = linear.issue(args.id)
+            linear.comment(issue["id"], " ".join(args.text))
+            print("ok")
+        return 0
+    except ERRORS as error:
+        return fail(str(error))
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    from agentorch import planner
+    from agentorch.notify import Dispatcher, build
+    try:
+        config = load_config(args, required=True)
+        if args.plan_cmd == "apply":
+            plan = planner.load_plan(config, args.id)
+            created = planner.apply_plan(config, plan, linear_client(args, config))
+            print("\n".join(created) or "Nothing new to create.")
+            return 0
+        if args.plan_cmd == "show":
+            print(planner.summary(planner.load_plan(config, args.id)))
+            return 0
+        if args.doc:
+            document, source = Path(args.doc).read_text(encoding="utf-8"), args.doc
+        else:
+            from agentorch.dispatch import Checkout
+            from agentorch.github import GitHub, provider_for
+            repo = config.repository(config.planner.get("repository"))
+            relative = config.planner.get("megadoc")
+            if not relative:
+                return fail("Set planner.megadoc to the doc's path in the repository, or pass --doc")
+            checkout = Checkout(config.state_dir / "linear", repo, GitHub(repo.name, provider_for(config, repo.name)))
+            checkout.prepare()
+            document, source = checkout.read_file(relative), f"{repo.name}:{relative}"
+        plan = planner.make_plan(config, document, source)
+        text = planner.summary(plan)
+        print(text)
+        Dispatcher(build(config.notify), {"plan_ready"})(
+            "plan_ready", text[:3500] + "\n\nReply \"approve plan\" to create these in Linear.")
+        return 0
+    except ERRORS + (RuntimeError,) as error:
+        return fail(str(error))
+
+
 # --- parser ----------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -409,7 +605,7 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         sub = board_cmds.add_parser(name, help=help_text)
         repo_arg(sub)
-        sub.add_argument("--issue", type=int, help="Board issue number")
+        sub.add_argument("--issue", help="Board issue (number, or Linear ID like ENG-1)")
         sub.add_argument("--cursor", help="Read-cursor name when agents share a login")
         if name == "post":
             sub.add_argument("text", nargs="*", help="Message (default: stdin)")
@@ -426,7 +622,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = commands.add_parser("init", help="Set up labels, the board and agent files in a project")
     repo_arg(init)
-    init.add_argument("--issue", type=int, help="Use this existing issue as the board")
+    init.add_argument("--issue", help="Use this existing issue as the board")
+    init.add_argument("--linear", metavar="TEAM", help="Use Linear (team key, e.g. ENG) for the board and tickets")
+    init.add_argument("--agents", nargs="*", help="Agent names to create agent:<name> labels for")
     init.add_argument("--no-files", action="store_true", help="Only change GitHub, write no files")
     init.add_argument("--force", action="store_true", help="Overwrite existing project files")
     init.set_defaults(func=cmd_init)
@@ -466,6 +664,45 @@ def build_parser() -> argparse.ArgumentParser:
     serve = worker_cmds.add_parser("serve", help="Poll configured repositories and run approved tasks")
     serve.add_argument("--once", action="store_true", help="Run one polling pass and exit")
     worker.set_defaults(func=cmd_worker)
+
+    ticket = commands.add_parser("ticket", help="Linear tickets for agents")
+    ticket_cmds = ticket.add_subparsers(dest="ticket_cmd", required=True)
+    tl = ticket_cmds.add_parser("list", help="Ready and in-progress tickets (optionally for one agent)")
+    tl.add_argument("--all", action="store_true", help="Include the backlog")
+    ts = ticket_cmds.add_parser("show", help="One ticket with its description")
+    ts.add_argument("id")
+    tn = ticket_cmds.add_parser("next", help="Claim the next ready ticket for an agent")
+    tn.add_argument("--peek", action="store_true", help="Show it without claiming")
+    td = ticket_cmds.add_parser("done", help="Mark a ticket ready for review")
+    td.add_argument("id")
+    td.add_argument("--pr", help="Pull request URL")
+    tw = ticket_cmds.add_parser("new", help="Create a ticket")
+    tw.add_argument("title", nargs="+")
+    tw.add_argument("--body")
+    tw.add_argument("--backlog", action="store_true", help="Create in Backlog instead of Todo")
+    ta = ticket_cmds.add_parser("assign", help="Hand a ticket to an agent")
+    ta.add_argument("id")
+    ta.add_argument("to", help="Agent name (label agent:<name>)")
+    ta.add_argument("--ready", action="store_true", help="Also move it to Todo")
+    tc = ticket_cmds.add_parser("comment", help="Comment on a ticket")
+    tc.add_argument("id")
+    tc.add_argument("text", nargs="+")
+    for sub in ticket_cmds.choices.values():
+        sub.add_argument("--agent", help="Agent name (default AGENTORCH_AGENT)")
+        sub.add_argument("--team", help="Linear team key (default from .agentorch.json or config)")
+    ticket.set_defaults(func=cmd_ticket)
+
+    plan = commands.add_parser("plan", help="Split the mega doc into Linear tickets")
+    plan_cmds = plan.add_subparsers(dest="plan_cmd", required=True)
+    pm = plan_cmds.add_parser("make", help="Draft a plan from the doc and send the summary")
+    pm.add_argument("--doc", help="Local file instead of planner.megadoc in the repository")
+    pm.add_argument("--team")
+    for name in ("show", "apply"):
+        sub = plan_cmds.add_parser(name, help={"show": "Show the latest plan",
+                                               "apply": "Create the plan's tickets in Linear"}[name])
+        sub.add_argument("--id", help="Plan id (default: latest)")
+        sub.add_argument("--team")
+    plan.set_defaults(func=cmd_plan)
 
     repo = commands.add_parser("repo", help="Repositories the worker serves (edits the config)")
     repo_cmds = repo.add_subparsers(dest="repo_cmd", required=True)

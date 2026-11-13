@@ -29,7 +29,7 @@ SANDBOX_TYPES = ("bwrap", "none")
 NOTIFY_TYPES = ("telegram", "signal-cli", "command", "stdout")
 EVENTS = (
     "task_waiting", "task_started", "task_review",
-    "task_failed", "task_cancelled", "board_mention", "worker_error",
+    "task_failed", "task_cancelled", "board_mention", "worker_error", "plan_ready",
 )
 PROJECT_FILE = ".agentorch.json"
 
@@ -180,6 +180,30 @@ class Config:
         if not isinstance(mentions, list):
             raise ConfigError("notify_mentions must be a list of logins")
         self.notify_mentions = {m.casefold() for m in mentions}
+
+        self.max_parallel: int = int(worker.get("max_parallel", 2))
+        if not 1 <= self.max_parallel <= 16:
+            raise ConfigError("worker.max_parallel must be between 1 and 16")
+
+        linear = data.get("linear")
+        if linear is not None and (not isinstance(linear, dict) or not linear.get("team")):
+            raise ConfigError('linear needs a team key, e.g. {"team": "ENG"}')
+        self.linear: Optional[Dict[str, Any]] = linear
+        subagents = data.get("subagents") or {}
+        if not isinstance(subagents, dict):
+            raise ConfigError("subagents must map a name to an agent spec")
+        self.subagents: Dict[str, Dict[str, Any]] = {}
+        for name, spec in subagents.items():
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", name or ""):
+                raise ConfigError(f"Sub-agent names use lowercase letters, digits and dashes: {name!r}")
+            spec = dict(self.agent, **(spec or {}))
+            if spec.get("type") not in AGENT_TYPES:
+                raise ConfigError(f"subagents.{name}.type must be one of {', '.join(AGENT_TYPES)}")
+            self.subagents[name] = spec
+        planner = data.get("planner") or {}
+        if not isinstance(planner, dict):
+            raise ConfigError("planner must be an object")
+        self.planner: Dict[str, Any] = planner
 
         repos = data.get("repositories") or []
         if not isinstance(repos, list):

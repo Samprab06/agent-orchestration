@@ -470,6 +470,11 @@ def serve(config: Config, once: bool = False) -> int:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("Another worker is already running with this state directory") from None
+        if config.linear:
+            from agentorch.dispatch import serve_linear
+            serve_linear(config, stop, Dispatcher(build_notifiers(config.notify), config.notify_events), once)
+            log("worker stopped")
+            return 0
         workers: List[RepoWorker] = []
         loaded = -1.0
 
