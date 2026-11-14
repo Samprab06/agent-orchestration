@@ -591,6 +591,40 @@ def cmd_plan(args: argparse.Namespace) -> int:
         return fail(str(error))
 
 
+def cmd_supervise(args: argparse.Namespace) -> int:
+    from agentorch import supervisor
+    from agentorch.linear import LinearBoard
+    from agentorch.notify import Dispatcher, build
+    try:
+        config = load_config(args, required=True)
+        linear = linear_client(args, config)
+        board = None
+        if config.linear and config.linear.get("board_issue"):
+            board = LinearBoard(linear, config.linear["board_issue"], cursor="supervisor",
+                                signature=f"[{config.human}'s Team Lead]")
+
+        def pulls():
+            repo = config.repository(None)
+            github = GitHub(repo.name, provider_for(config, repo.name))
+            return [{"number": p["number"], "title": p["title"], "branch": p["head"]["ref"],
+                     "draft": p.get("draft"), "author": (p.get("user") or {}).get("login"),
+                     "url": p["html_url"]} for p in github.get("/pulls", state="open", per_page=30)]
+
+        result = supervisor.supervise(config, linear, board, pulls, dry_run=args.dry_run)
+        lines = [f"Team lead {result.get('at', '')}: {result['summary']}"]
+        shown = result["applied"] if not args.dry_run else [
+            f"(dry run) {a['type']} {a.get('ticket') or a.get('title') or a.get('body', '')[:60]}"
+            for a in result["actions"]]
+        lines += [f"- {line}" for line in shown] or ["- no changes"]
+        text = "\n".join(lines)
+        print(text)
+        if result["applied"] and not args.dry_run:
+            Dispatcher(build(config.notify), {"supervisor"})("supervisor", text[:3500])
+        return 0
+    except ERRORS + (RuntimeError,) as error:
+        return fail(str(error))
+
+
 # --- parser ----------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -710,6 +744,11 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--id", help="Plan id (default: latest)")
         sub.add_argument("--team")
     plan.set_defaults(func=cmd_plan)
+
+    sup = commands.add_parser("supervise", help="Team-lead review of Linear, the board and PRs (run every 15 min)")
+    sup.add_argument("--dry-run", action="store_true", help="Show proposed actions without applying them")
+    sup.add_argument("--team")
+    sup.set_defaults(func=cmd_supervise)
 
     repo = commands.add_parser("repo", help="Repositories the worker serves (edits the config)")
     repo_cmds = repo.add_subparsers(dest="repo_cmd", required=True)

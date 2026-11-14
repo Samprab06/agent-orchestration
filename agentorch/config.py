@@ -29,7 +29,7 @@ SANDBOX_TYPES = ("bwrap", "none")
 NOTIFY_TYPES = ("telegram", "signal-cli", "command", "stdout")
 EVENTS = (
     "task_waiting", "task_started", "task_review",
-    "task_failed", "task_cancelled", "board_mention", "worker_error", "plan_ready",
+    "task_failed", "task_cancelled", "board_mention", "worker_error", "plan_ready", "supervisor",
 )
 PROJECT_FILE = ".agentorch.json"
 

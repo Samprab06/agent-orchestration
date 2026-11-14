@@ -70,6 +70,8 @@ if [ "$service" = 1 ] && command -v systemctl >/dev/null; then
   unit_dir="$HOME/.config/systemd/user"
   mkdir -p "$unit_dir"
   install -m 644 "$src/deploy/agentorch-worker.service" "$unit_dir/agentorch-worker.service"
+  install -m 644 "$src/deploy/agentorch-supervise.service" "$unit_dir/agentorch-supervise.service"
+  install -m 644 "$src/deploy/agentorch-supervise.timer" "$unit_dir/agentorch-supervise.timer"
   systemctl --user daemon-reload
   say "service   $unit_dir/agentorch-worker.service"
   if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || echo no)" != yes ]; then
