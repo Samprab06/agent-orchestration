@@ -304,6 +304,20 @@ class PlannerTests(unittest.TestCase):
         self.assertNotIn("temperature", sent)
         self.assertEqual(sent["model"], "gpt-6-luna")
 
+    def test_command_planner_reads_output_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_codex.py"
+            script.write_text(
+                "import sys\nprompt = sys.stdin.read()\nout = sys.argv[sys.argv.index('-o') + 1]\n"
+                "open(out, 'w').write('{\"tickets\": [{\"title\": \"From codex\", \"agent\": \"oracle-backend\"}]}'"
+                " if 'Allowed agents' in prompt else 'no')\nprint('progress noise')\n")
+            self.config.planner = {"command": [sys.executable, str(script), "-o", "{output}"]}
+            plan = planner.make_plan(self.config, "# Doc\nbuild it", "doc.md")
+            self.assertEqual(plan["tickets"][0]["title"], "From codex")
+            self.config.planner = {"command": [sys.executable, "-c", "raise SystemExit(4)"]}
+            with self.assertRaises(RuntimeError):
+                planner.make_plan(self.config, "# Doc", "doc.md")
+
     def test_bad_model_output(self):
         with self.assertRaises(ValueError):
             planner.make_plan(self.config, "doc", "d", ask=lambda *_: "I cannot do that")

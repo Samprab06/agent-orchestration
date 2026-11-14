@@ -53,11 +53,39 @@ def planner_key(settings: Dict[str, Any]) -> str:
     return ""  # local endpoints such as Ollama need no key
 
 
+def run_command(settings: Dict[str, Any], system: str, user: str, timeout: int = 900) -> str:
+    """Use a coding CLI as the planner, e.g. Codex on a ChatGPT login.
+
+    ``command`` is an argv list. The prompt goes to stdin. If an element is
+    ``{output}``, it is replaced by a temporary file whose contents are the reply
+    (Codex's ``--output-last-message``); otherwise stdout is the reply.
+    """
+    import subprocess
+    import tempfile
+    argv = settings["command"]
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+        raise ValueError("planner.command must be a list of arguments")
+    with tempfile.TemporaryDirectory() as tmp:
+        output = os.path.join(tmp, "reply.txt")
+        argv = [output if a == "{output}" else os.path.expanduser(a) for a in argv]
+        result = subprocess.run(argv, input=system + "\n\n" + user, text=True, capture_output=True,
+                                timeout=int(settings.get("timeout", timeout)), cwd=tmp)
+        if result.returncode:
+            tail = (result.stderr or result.stdout or "").strip()[-400:]
+            raise RuntimeError(f"planner command exited {result.returncode}: {tail}")
+        if output in argv:
+            with open(output, encoding="utf-8") as handle:
+                return handle.read()
+        return result.stdout
+
+
 def chat(settings: Dict[str, Any], system: str, user: str, timeout: int = 180) -> str:
+    if settings.get("command"):
+        return run_command(settings, system, user)
     base = settings.get("base_url")
     model = settings.get("model")
     if not base or not model:
-        raise ValueError("planner.base_url and planner.model are required")
+        raise ValueError("Set planner.command (e.g. Codex) or planner.base_url and planner.model")
     headers = {"Content-Type": "application/json"}
     key = planner_key(settings)
     if key:

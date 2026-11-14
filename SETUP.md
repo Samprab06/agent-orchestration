@@ -391,7 +391,8 @@ token, so no browser login is needed on a headless server:
 | `linear.review_state` | State used when the PR is open (default `In Review`; falls back to the first started state) |
 | `subagents.<name>` | An agent spec, as for `agent` (`type`, `command`, `model`, `env`, ...), plus `description` (what the planner assigns to it), `instructions` (added to every prompt) and `repository` (if not the only configured one) |
 | `worker.max_parallel` | Tickets running at once (default 2; budget about 1 CPU and 1.5 GB of RAM each) |
-| `planner.base_url`, `planner.model` | OpenAI-compatible endpoint and a small model |
+| `planner.command` | Use a coding CLI as the planner instead of an API, e.g. Codex on a ChatGPT login: `["codex", "exec", "--skip-git-repo-check", "--output-last-message", "{output}", "-"]`. The prompt goes to stdin; `{output}` is a temp file holding the reply. |
+| `planner.base_url`, `planner.model` | Or an OpenAI-compatible endpoint and a small model |
 | `planner.api_key_file` / `api_key_env` | Defaults `~/.config/agentorch/planner-key` / `PLANNER_API_KEY`. None needed for a local Ollama. |
 | `planner.megadoc` | Path of the doc in the repository. `plan make --doc FILE` uses a local file instead. |
 | `planner.extra_agents` | Teammates' agent names the planner may also assign |
