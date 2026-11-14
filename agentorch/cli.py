@@ -59,7 +59,12 @@ def linear_settings(config: Optional[Config]) -> Optional[dict]:
     project = project_linear()
     if project:
         return project
-    return config.linear if config is not None and config.linear else None
+    if config is not None and config.linear:
+        return config.linear
+    team = os.environ.get("AGENTORCH_LINEAR_TEAM")
+    if team:  # before the project repo (and its .agentorch.json) exists
+        return {"team": team, "board_issue": os.environ.get("AGENTORCH_BOARD_ISSUE")}
+    return None
 
 
 def make_board(args: argparse.Namespace):
@@ -502,7 +507,7 @@ def cmd_ticket(args: argparse.Namespace) -> int:
         if args.ticket_cmd == "list":
             label = AGENT_PREFIX + agent if agent else None
             types = ("unstarted", "started") if not args.all else ("backlog", "unstarted", "started")
-            for issue in linear.issues(label=label, state_types=types, first=100):
+            for issue in linear.issues(label=label, state_types=types, first=50):
                 print(describe_ticket(issue))
         elif args.ticket_cmd == "show":
             issue = linear.issue(args.id)
@@ -575,7 +580,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             checkout = Checkout(config.state_dir / "linear", repo, GitHub(repo.name, provider_for(config, repo.name)))
             checkout.prepare()
             document, source = checkout.read_file(relative), f"{repo.name}:{relative}"
-        plan = planner.make_plan(config, document, source)
+        plan = planner.make_plan(config, document, source, section=args.section,
+                                 progress=lambda m: print(m, file=sys.stderr, flush=True))
         text = planner.summary(plan)
         print(text)
         Dispatcher(build(config.notify), {"plan_ready"})(
@@ -696,6 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_cmds = plan.add_subparsers(dest="plan_cmd", required=True)
     pm = plan_cmds.add_parser("make", help="Draft a plan from the doc and send the summary")
     pm.add_argument("--doc", help="Local file instead of planner.megadoc in the repository")
+    pm.add_argument("--section", help="Only plan the part under headings containing this text")
     pm.add_argument("--team")
     for name in ("show", "apply"):
         sub = plan_cmds.add_parser(name, help={"show": "Show the latest plan",

@@ -25,22 +25,26 @@
   "subagents": {
     "oracle-backend": {
       "description": "APIs, database, server code",
-      "instructions": "Own the backend."
+      "instructions": "Own the backend.",
+      "max_subagents": 4
     },
     "oracle-frontend": {
       "description": "UI pages and components",
-      "instructions": "Own the frontend."
+      "instructions": "Own the frontend.",
+      "max_subagents": 4
     }
   },
   "planner": {
-    "base_url": "https://openrouter.ai/api/v1",
-    "model": "a-small-model",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-6-luna",
     "api_key_file": "~/.config/agentorch/planner-key",
-    "megadoc": "MEGADOC.md",
+    "megadoc": "final/MEGADOC.md",
+    "chunk_chars": 60000,
+    "max_tickets": 40,
+    "timeout": 300,
     "extra_agents": [
       "teammate-codex"
-    ],
-    "max_tickets": 25
+    ]
   },
   "sandbox": {
     "type": "bwrap"
@@ -48,7 +52,7 @@
   "worker": {
     "state_dir": "~/.local/share/agentorch",
     "poll": 30,
-    "max_parallel": 2
+    "max_parallel": 4
   },
   "notify": [
     {

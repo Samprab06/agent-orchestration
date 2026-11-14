@@ -182,8 +182,8 @@ class Config:
         self.notify_mentions = {m.casefold() for m in mentions}
 
         self.max_parallel: int = int(worker.get("max_parallel", 2))
-        if not 1 <= self.max_parallel <= 16:
-            raise ConfigError("worker.max_parallel must be between 1 and 16")
+        if not 1 <= self.max_parallel <= 32:
+            raise ConfigError("worker.max_parallel must be between 1 and 32")
 
         linear = data.get("linear")
         if linear is not None and (not isinstance(linear, dict) or not linear.get("team")):

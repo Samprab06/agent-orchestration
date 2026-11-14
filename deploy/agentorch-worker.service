@@ -13,11 +13,11 @@ Restart=on-failure
 RestartSec=15s
 KillMode=mixed
 TimeoutStopSec=40s
-# Covers the worker, the agent and verification together.
-CPUQuota=200%
-MemoryHigh=1536M
-MemoryMax=2G
-TasksMax=256
+# Covers the worker and every agent it runs in parallel. Budget roughly 0.5-1 GB
+# per concurrent agent; raise with `systemctl --user edit agentorch-worker`.
+MemoryHigh=6G
+MemoryMax=8G
+TasksMax=2048
 Nice=5
 NoNewPrivileges=yes
 UMask=0077
