@@ -10,7 +10,9 @@ duplicates.
 Config (``planner``): ``base_url`` (e.g. https://openrouter.ai/api/v1),
 ``model``, ``api_key_file`` (default ~/.config/agentorch/planner-key) or
 ``api_key_env``, ``megadoc`` (path in the repository), ``repository``,
-``max_tickets`` (default 25), ``extra_agents`` (labels for teammates' agents
+``max_tickets`` per part (default 40), ``chunk_chars`` (default 60000: larger
+docs are planned section by section, split at # and ## headings),
+``temperature`` and ``reasoning_effort`` (only sent if set), ``timeout``, ``extra_agents`` (labels for teammates' agents
 the planner may also assign).
 """
 from __future__ import annotations
@@ -27,7 +29,7 @@ from urllib.request import Request, urlopen
 from agentorch.config import Config, expand
 from agentorch.linear import AGENT_PREFIX, Linear
 
-MAX_DOC = 60000
+MAX_DOC = 400000  # characters sent in one request; larger docs are planned section by section
 
 SYSTEM = """You are a technical project planner. Split the project document into small,
 independently verifiable engineering tickets that coding agents can complete in under
@@ -60,8 +62,14 @@ def chat(settings: Dict[str, Any], system: str, user: str, timeout: int = 180) -
     key = planner_key(settings)
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    payload = {"model": model, "temperature": 0.2,
+    payload = {"model": model,
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    # Reasoning models (GPT-5/6 family, o-series) reject a custom temperature.
+    if settings.get("temperature") is not None:
+        payload["temperature"] = float(settings["temperature"])
+    if settings.get("reasoning_effort"):
+        payload["reasoning_effort"] = settings["reasoning_effort"]
+    timeout = int(settings.get("timeout", timeout))
     request = Request(base.rstrip("/") + "/chat/completions", data=json.dumps(payload).encode(),
                       method="POST", headers=headers)
     try:
@@ -142,18 +150,77 @@ def plans_dir(config: Config) -> Path:
     return path
 
 
-def make_plan(config: Config, document: str, source: str, ask=chat) -> Dict[str, Any]:
+def sections(document: str, level: int = 2) -> List[Dict[str, str]]:
+    """Split markdown at headings of ``level`` or higher (# and ## by default)."""
+    pattern = re.compile(r"^(#{1,%d})\s+(.+?)\s*#*\s*$" % level, re.M)
+    marks = list(pattern.finditer(document))
+    if not marks:
+        return [{"title": "Document", "text": document}]
+    parts = []
+    if document[:marks[0].start()].strip():
+        parts.append({"title": "Introduction", "text": document[:marks[0].start()]})
+    for i, mark in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(document)
+        parts.append({"title": mark.group(2).strip(), "text": document[mark.start():end]})
+    return parts
+
+
+def chunk(document: str, limit: int) -> List[Dict[str, str]]:
+    """Group consecutive sections into chunks of at most ``limit`` characters."""
+    chunks: List[Dict[str, str]] = []
+    for part in sections(document):
+        text = part["text"]
+        while len(text) > limit:  # one huge section: hard split
+            chunks.append({"title": part["title"], "text": text[:limit]})
+            text = text[limit:]
+        if chunks and len(chunks[-1]["text"]) + len(text) <= limit and not chunks[-1].get("full"):
+            chunks[-1]["text"] += text
+            chunks[-1]["title"] += " / " + part["title"]
+        else:
+            chunks.append({"title": part["title"], "text": text})
+    return chunks
+
+
+def make_plan(config: Config, document: str, source: str, ask=chat, section: Optional[str] = None,
+              progress=None) -> Dict[str, Any]:
     catalog = agent_catalog(config)
     if not catalog:
         raise ValueError("Define subagents (or planner.extra_agents) so tickets can be assigned")
     agents_text = "\n".join(f"- {name}: {desc}" for name, desc in catalog.items())
-    if len(document) > MAX_DOC:
-        document = document[:MAX_DOC] + "\n\n[document truncated]"
-    user = f"Allowed agents:\n{agents_text}\n\nProject document ({source}):\n\n{document}"
-    reply = ask(config.planner, SYSTEM, user)
-    tickets = validate(extract_json(reply), list(catalog), int(config.planner.get("max_tickets", 25)))
+    if section:
+        matches = [p for p in sections(document, 6) if section.casefold() in p["title"].casefold()]
+        if not matches:
+            raise ValueError(f"No heading matching {section!r} in {source}")
+        document = "".join(p["text"] for p in matches)
+        source = f"{source} § {section}"
+    limit = int(config.planner.get("chunk_chars", 60000))
+    pieces = chunk(document, limit) if len(document) > limit else [{"title": "whole document", "text": document}]
+    pieces = [p for p in pieces if p["text"].strip()]
+    max_tickets = int(config.planner.get("max_tickets", 40))
+    tickets: List[Dict[str, Any]] = []
+    for number, piece in enumerate(pieces, 1):
+        if progress:
+            progress(f"planning part {number}/{len(pieces)}: {piece['title'][:80]}")
+        done = "\n".join(f"- {t['key']}: {t['title']}" for t in tickets)
+        context = (f"\n\nTickets already planned from earlier parts (do not repeat them; you may list "
+                   f"their keys in depends_on):\n{done}" if done else "")
+        scope = "" if len(pieces) == 1 else f"\n\nThis is part {number} of {len(pieces)}: {piece['title']}."
+        user = (f"Allowed agents:\n{agents_text}{context}{scope}\n\n"
+                f"Project document ({source}):\n\n{piece['text'][:MAX_DOC]}")
+        reply = ask(config.planner, SYSTEM, user)
+        prefix = f"P{number}." if len(pieces) > 1 else ""
+        raw = extract_json(reply)
+        for item in raw["tickets"]:
+            if isinstance(item, dict):
+                own = {str(t.get("key")) for t in raw["tickets"] if isinstance(t, dict)}
+                item["key"] = prefix + str(item.get("key") or "")
+                item["depends_on"] = [prefix + str(d) if str(d) in own else str(d)
+                                      for d in (item.get("depends_on") or [])]
+        earlier = [dict(t) for t in tickets]
+        merged = validate({"tickets": earlier + raw["tickets"]}, list(catalog), len(earlier) + max_tickets)
+        tickets = merged
     plan = {"id": time.strftime("%Y%m%d-%H%M%S"), "source": source, "created": time.time(),
-            "model": config.planner.get("model"), "tickets": tickets, "applied": {}}
+            "model": config.planner.get("model"), "parts": len(pieces), "tickets": tickets, "applied": {}}
     save_plan(config, plan)
     return plan
 
@@ -175,11 +242,14 @@ def load_plan(config: Config, plan_id: Optional[str] = None) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def summary(plan: Dict[str, Any], limit: int = 30) -> str:
-    lines = [f"Plan {plan['id']}: {len(plan['tickets'])} tickets from {plan['source']}"]
+def summary(plan: Dict[str, Any], limit: int = 40) -> str:
+    parts = f" in {plan['parts']} parts" if plan.get("parts", 1) > 1 else ""
+    lines = [f"Plan {plan['id']}: {len(plan['tickets'])} tickets from {plan['source']}{parts}"]
     for t in plan["tickets"][:limit]:
         deps = f" after {','.join(t['depends_on'])}" if t["depends_on"] else ""
         lines.append(f"{t['key']} [{t['agent']}] P{t['priority']} {t['title']}{deps}")
+    if len(plan["tickets"]) > limit:
+        lines.append(f"... and {len(plan['tickets']) - limit} more (agentorch plan show)")
     if plan.get("applied"):
         lines.append(f"Already created: {len(plan['applied'])}")
     return "\n".join(lines)

@@ -349,6 +349,25 @@ the code and pull requests. Linear holds the tickets and the Agent Board.
 6. **The board** is a Linear ticket labelled `board` ("Agent Board"). Its comments
    are the chat. Agents mention each other by agent name (`@oracle-backend`).
 
+### Linear MCP for the interactive BanyanCode (optional)
+
+The orchestrator talks to Linear's API directly, so it needs no MCP. Your own
+interactive BanyanCode session (e.g. in tmux on the server) can additionally use
+Linear's MCP server to read, create and update tickets in conversation. Add it to
+BanyanCode's config (OpenCode format), reusing the same personal API key as a bearer
+token, so no browser login is needed on a headless server:
+
+```json
+"mcp": {
+  "linear": {
+    "type": "remote",
+    "url": "https://mcp.linear.app/mcp",
+    "oauth": false,
+    "headers": { "Authorization": "Bearer {file:~/.config/agentorch/linear-key}" }
+  }
+}
+```
+
 ### Setup
 
 1. In Linear: create a personal API key (Settings, under Security & access, then
@@ -376,7 +395,10 @@ the code and pull requests. Linear holds the tickets and the Agent Board.
 | `planner.api_key_file` / `api_key_env` | Defaults `~/.config/agentorch/planner-key` / `PLANNER_API_KEY`. None needed for a local Ollama. |
 | `planner.megadoc` | Path of the doc in the repository. `plan make --doc FILE` uses a local file instead. |
 | `planner.extra_agents` | Teammates' agent names the planner may also assign |
-| `planner.max_tickets` | Default 25 |
+| `planner.max_tickets` | Per part, default 40 |
+| `planner.chunk_chars` | Docs longer than this (default 60000 characters) are planned part by part, split at `#`/`##` headings. Each part sees the tickets already planned, so it doesn't repeat them and can depend on them. `plan make --section "Payments"` plans one section only. |
+| `planner.temperature`, `reasoning_effort`, `timeout` | Only sent if set. GPT-5/6 reasoning models (e.g. `gpt-6-luna`) reject a custom temperature. |
+| `subagents.<name>.max_subagents` | BanyanCode only: how many of its own sub-agents one ticket may fan out to (1-25, default 1) |
 
 5. Add `"plan_ready"` to `notify_events` if you set that list explicitly.
 6. `agentorch doctor` should show the Linear user, the team and its states, and the

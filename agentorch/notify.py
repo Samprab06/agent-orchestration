@@ -140,7 +140,8 @@ def read_env_file(path: str, keys: Iterable[str] = SIGNAL_KEYS) -> Dict[str, str
     """Read only the named keys from a dotenv file such as ``~/.hermes/.env``."""
     wanted, values = set(keys), {}
     try:
-        text = open(os.path.expanduser(path), encoding="utf-8").read()
+        with open(os.path.expanduser(path), encoding="utf-8") as handle:
+            text = handle.read()
     except OSError:
         return values
     for line in text.splitlines():

@@ -255,6 +255,55 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("- [ ] migration runs", linear.issue("ENG-1")["description"])
         self.assertEqual(planner.apply_plan(self.config, planner.load_plan(self.config), linear), [])
 
+    def test_large_doc_is_planned_in_parts_with_context(self):
+        self.config.planner["chunk_chars"] = 60
+        doc = "# Mega\nintro\n\n## Backend\n" + "b" * 50 + "\n\n## Frontend\n" + "f" * 50 + "\n"
+        prompts = []
+
+        def ask(settings, system, user):
+            prompts.append(user)
+            n = len(prompts)
+            deps = ["P1.T1"] if n > 1 else []
+            return json.dumps({"tickets": [{"key": "T1", "title": f"Part {n} work",
+                                            "agent": "oracle-backend", "depends_on": deps}]})
+        plan = planner.make_plan(self.config, doc, "doc.md", ask=ask)
+        self.assertGreater(plan["parts"], 1)
+        self.assertEqual(len(plan["tickets"]), plan["parts"])
+        self.assertIn("P1.T1: Part 1 work", prompts[1])  # later parts see earlier tickets
+        self.assertEqual(plan["tickets"][1]["depends_on"], ["P1.T1"])
+
+    def test_section_filter(self):
+        doc = "# A\nalpha\n## Payments\npay stuff\n## Other\nx\n"
+        seen = []
+        planner.make_plan(self.config, doc, "doc.md", section="payments",
+                          ask=lambda s, sy, u: seen.append(u) or self.reply())
+        self.assertIn("pay stuff", seen[0])
+        self.assertNotIn("alpha", seen[0])
+        with self.assertRaises(ValueError):
+            planner.make_plan(self.config, doc, "doc.md", section="nope", ask=self.reply)
+
+    def test_no_temperature_unless_configured(self):
+        from unittest.mock import patch
+        sent = {}
+
+        class Response:
+            def __init__(self, body):
+                self.body = body
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return self.body
+
+        def fake_urlopen(request, timeout=0):
+            sent.update(json.loads(request.data))
+            return Response(json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode())
+        with patch("agentorch.planner.urlopen", fake_urlopen):
+            planner.chat({"base_url": "http://x", "model": "gpt-6-luna"}, "s", "u")
+        self.assertNotIn("temperature", sent)
+        self.assertEqual(sent["model"], "gpt-6-luna")
+
     def test_bad_model_output(self):
         with self.assertRaises(ValueError):
             planner.make_plan(self.config, "doc", "d", ask=lambda *_: "I cannot do that")

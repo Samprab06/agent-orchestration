@@ -575,7 +575,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             checkout = Checkout(config.state_dir / "linear", repo, GitHub(repo.name, provider_for(config, repo.name)))
             checkout.prepare()
             document, source = checkout.read_file(relative), f"{repo.name}:{relative}"
-        plan = planner.make_plan(config, document, source)
+        plan = planner.make_plan(config, document, source, section=args.section,
+                                 progress=lambda m: print(m, file=sys.stderr, flush=True))
         text = planner.summary(plan)
         print(text)
         Dispatcher(build(config.notify), {"plan_ready"})(
@@ -696,6 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_cmds = plan.add_subparsers(dest="plan_cmd", required=True)
     pm = plan_cmds.add_parser("make", help="Draft a plan from the doc and send the summary")
     pm.add_argument("--doc", help="Local file instead of planner.megadoc in the repository")
+    pm.add_argument("--section", help="Only plan the part under headings containing this text")
     pm.add_argument("--team")
     for name in ("show", "apply"):
         sub = plan_cmds.add_parser(name, help={"show": "Show the latest plan",

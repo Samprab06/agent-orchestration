@@ -93,7 +93,8 @@ class BanyanCode(Agent):
     def config_files(self) -> Dict[str, str]:
         return {"banyancode.json": json.dumps({
             "permission": EDIT_ONLY,
-            "banyancode_max_subagents": 1,
+            # BanyanCode can fan a ticket out to its own sub-agents (up to 25).
+            "banyancode_max_subagents": max(1, min(25, int(self.spec.get("max_subagents", 1)))),
             "banyancode_disable_websearch": True,
             "banyancode_codegraph_watch_enabled": False,
         })}
