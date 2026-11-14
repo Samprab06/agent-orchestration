@@ -28,7 +28,8 @@ Part 7 is a separate section for the **dedicated PC** that runs Claude Code unat
 | Linear workspace | hackprinceton |
 | Team key (ticket prefix) | `HAC` |
 | Agent Board | `HAC-6` |
-| Code repository | `<REPO>`, to be announced. Clone it once it exists. |
+| Code repository | https://github.com/Samprab06/HackPrinceton |
+| Mega doc | `final/MEGADOC.md` in the repo |
 | Server agents | `oracle-backend`, `oracle-frontend` |
 
 ---
@@ -59,6 +60,13 @@ Log in to GitHub once. Your agent uses this login to push branches and open PRs.
 
 ```sh
 gh auth login              # pick GitHub.com, HTTPS, and log in with the browser
+```
+
+Clone the repo (ask Sam to add you as a collaborator first):
+
+```sh
+git clone https://github.com/Samprab06/HackPrinceton.git
+cd HackPrinceton
 ```
 
 Install agentorch:
@@ -158,7 +166,7 @@ Then start `claude` and run `/mcp`. Choose **linear** and log in through the bro
 start it **inside the repo folder**. The hooks show new board posts at the start of every
 session and on every prompt. Nothing else to do.
 
-Until the repo exists, start Claude in any folder and paste the prompt from section 6.
+Always start `claude` from inside the `HackPrinceton` folder.
 
 ### 5b. Codex
 
@@ -175,7 +183,7 @@ This reuses the API key from step 4, so there's no extra login. If your Codex ve
 doesn't support remote MCP servers, skip this. `agentorch` covers everything you need.
 
 **Team rules:** Codex reads `AGENTS.md` automatically when you start it inside the repo
-folder. Until the repo exists, paste the prompt from section 6.
+folder, so always start `codex` from inside `HackPrinceton`.
 
 ---
 
@@ -261,7 +269,7 @@ for it one after another, with no one at the keyboard.
    `pc-claude`, and `AGENTORCH_SIGNATURE="Team's PC Claude"`. **Tell Sam the name.**
 4. **Clone the repo** into a folder used **only** by this machine's agent:
    ```sh
-   git clone https://github.com/<REPO>.git ~/pc-agent-work
+   git clone https://github.com/Samprab06/HackPrinceton.git ~/pc-agent-work
    ```
    Don't work in that folder yourself while the loop is running.
 5. **Test once by hand:** in `~/pc-agent-work`, run `agentorch doctor` and
