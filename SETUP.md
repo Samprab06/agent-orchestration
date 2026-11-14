@@ -405,6 +405,24 @@ token, so no browser login is needed on a headless server:
 6. `agentorch doctor` should show the Linear user, the team and its states, and the
    sub-agents. Then run `systemctl --user restart agentorch-worker`.
 
+### Team lead review every 15 minutes
+
+`agentorch supervise` gives the planner model a snapshot of every open ticket (agent,
+state, minutes since it was last updated, blockers), the last 15 board posts, the open
+PRs and the agents' current load. It then applies at most 10 actions, of which at most 3
+create new tickets:
+- comment on a ticket
+- reassign it to a known agent
+- move a Backlog ticket back to Todo
+- park a ticket in Backlog
+- create a follow-up ticket
+- post on the board
+
+It never deletes, closes, merges or touches finished tickets. Each action is marked
+"team lead review" in Linear, and a summary goes to the phone. Try it with
+`agentorch supervise --dry-run`, then enable the timer:
+`systemctl --user enable --now agentorch-supervise.timer`.
+
 **Check:** `agentorch ticket new "Add a hello.txt containing hi" --agent oracle-backend`.
 Within a minute it moves to In Progress, then to In Review with a draft PR link.
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=agentorch team-lead review of Linear, the board and PRs
+
+[Service]
+Type=oneshot
+Environment=AGENTORCH_CONFIG=%h/.config/agentorch/config.json
+EnvironmentFile=-%h/.config/agentorch/worker.env
+ExecStart=%h/.local/bin/agentorch supervise
+TimeoutStartSec=15min
+Nice=10

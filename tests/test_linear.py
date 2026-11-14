@@ -340,5 +340,46 @@ class LinearBoardTests(unittest.TestCase):
             self.assertEqual(board.unread(), [])
 
 
+class SupervisorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.config = Config({"linear": {"team": "HAC"},
+                              "subagents": {"oracle-backend": {"type": "banyancode"},
+                                            "oracle-frontend": {"type": "banyancode"}},
+                              "planner": {"command": ["x"], "extra_agents": ["pc-claude"]},
+                              "worker": {"state_dir": self.tmp.name}})
+        self.linear = FakeLinear()
+        self.a = self.linear.create_issue("Vague thing", labels=["agent:oracle-backend"])
+        self.b = self.linear.create_issue("Failed one", labels=["agent:oracle-backend"], state_kind="backlog")
+
+    def test_validates_and_applies_limited_actions(self):
+        from agentorch import supervisor
+        reply = json.dumps({"summary": "Backend is overloaded.", "actions": [
+            {"type": "comment", "ticket": "ENG-1", "body": "Add acceptance criteria"},
+            {"type": "assign", "ticket": "ENG-1", "agent": "pc-claude", "reason": "balance"},
+            {"type": "ready", "ticket": "ENG-2", "reason": "retry"},
+            {"type": "assign", "ticket": "ENG-1", "agent": "ghost-agent"},
+            {"type": "comment", "ticket": "ENG-99", "body": "unknown ticket"},
+            {"type": "delete", "ticket": "ENG-1"},
+            {"type": "create", "title": "Split part", "agent": "oracle-frontend", "blocked_by": ["ENG-1"]},
+        ]})
+        result = supervisor.supervise(self.config, self.linear, None, lambda: [], ask=lambda *a: reply)
+        self.assertEqual([a["type"] for a in result["actions"]], ["comment", "assign", "ready", "create"])
+        a = self.linear.issue("ENG-1")
+        self.assertEqual([l["name"] for l in a["labels"]["nodes"]], ["agent:pc-claude"])
+        self.assertEqual(self.linear.issue("ENG-2")["state"]["name"], "Todo")
+        created = self.linear.issue("ENG-3")
+        self.assertEqual(blockers(created), ["ENG-1"])
+
+    def test_dry_run_and_bad_json(self):
+        from agentorch import supervisor
+        reply = json.dumps({"summary": "x", "actions": [{"type": "ready", "ticket": "ENG-2"}]})
+        supervisor.supervise(self.config, self.linear, None, lambda: [], dry_run=True, ask=lambda *a: reply)
+        self.assertEqual(self.linear.issue("ENG-2")["state"]["name"], "Backlog")
+        result = supervisor.supervise(self.config, self.linear, None, lambda: [], ask=lambda *a: "nope")
+        self.assertEqual(result["actions"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
