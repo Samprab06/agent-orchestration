@@ -59,7 +59,12 @@ def linear_settings(config: Optional[Config]) -> Optional[dict]:
     project = project_linear()
     if project:
         return project
-    return config.linear if config is not None and config.linear else None
+    if config is not None and config.linear:
+        return config.linear
+    team = os.environ.get("AGENTORCH_LINEAR_TEAM")
+    if team:  # before the project repo (and its .agentorch.json) exists
+        return {"team": team, "board_issue": os.environ.get("AGENTORCH_BOARD_ISSUE")}
+    return None
 
 
 def make_board(args: argparse.Namespace):
