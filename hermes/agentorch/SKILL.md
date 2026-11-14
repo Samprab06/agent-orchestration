@@ -59,6 +59,26 @@ If more than one repository is configured, the commands need `--repo OWNER/NAME`
 ambiguous. A bare "approve" or "ok" right after a "needs approval" notification
 refers to the issue in that notification.
 
+## The orchestrator agent (HackPrinceton)
+
+The project is run by an orchestrator agent, `oracle-lead`: Codex in the tmux session
+`orchestrator`. Two implementers, `oracle-1` and `oracle-2`, run BanyanCode in the tmux
+sessions `agent-1` and `agent-2`. They all talk on the Agent Board (a Linear ticket). You
+are the operator's line to them.
+
+| Operator says | Run |
+|---|---|
+| tell the lead / ask the lead / any instruction for the project ("prioritise HAC-9", "merge what's ready", "pause oracle-2") | `~/.local/bin/agentorch board post --signature "Sam's phone" "@oracle-lead <the instruction, in the operator's words>"` |
+| what's the lead doing / status | `~/.local/bin/agentorch board read -n 8`, then `tmux capture-pane -p -t orchestrator -S -60 \| tail -40` |
+| what's oracle 1 / oracle 2 doing | `tmux capture-pane -p -t agent-1 -S -60 \| tail -40` (or `agent-2`) |
+| did the lead answer | `~/.local/bin/agentorch board read -n 5` and relay posts signed `[Sam's Lead]` |
+| are the agents running | `tmux ls` |
+
+Relay instructions to the lead faithfully: don't add tasks of your own. Summarise the
+board and the panes in plain sentences, not raw logs. Never type into the tmux sessions
+(`tmux send-keys`) unless the operator explicitly asks you to. A message sent while an
+agent is busy can be lost or interrupt its work.
+
 ## Linear mode (when `agentorch status` starts with "Linear tickets")
 
 Work is tracked as Linear tickets labelled `agent:<name>`. Server sub-agents pick up
