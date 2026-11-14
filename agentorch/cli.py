@@ -502,7 +502,7 @@ def cmd_ticket(args: argparse.Namespace) -> int:
         if args.ticket_cmd == "list":
             label = AGENT_PREFIX + agent if agent else None
             types = ("unstarted", "started") if not args.all else ("backlog", "unstarted", "started")
-            for issue in linear.issues(label=label, state_types=types, first=100):
+            for issue in linear.issues(label=label, state_types=types, first=50):
                 print(describe_ticket(issue))
         elif args.ticket_cmd == "show":
             issue = linear.issue(args.id)

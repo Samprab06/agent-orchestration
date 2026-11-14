@@ -84,15 +84,18 @@ class Linear:
 
     def team(self, refresh: bool = False) -> Dict[str, Any]:
         if self._team is None or refresh:
-            data = self.query("""query($key: String!) { teams(filter: {key: {eq: $key}}) { nodes {
-                id key name
-                states(first: 50) { nodes { id name type position } }
-                labels(first: 250) { nodes { id name } }
-            } } }""", {"key": self.team_key})
+            data = self.query("""query($key: String!) { teams(filter: {key: {eq: $key}}, first: 1) {
+                nodes { id key name } } }""", {"key": self.team_key})
             nodes = data["teams"]["nodes"]
             if not nodes:
                 raise ValueError(f"No Linear team with key {self.team_key}")
-            self._team = nodes[0]
+            team = dict(nodes[0])
+            # Separate small queries: Linear rejects nested connections as too complex.
+            team["states"] = self.query("""query($id: String!) { team(id: $id) {
+                states(first: 50) { nodes { id name type position } } } }""", {"id": team["id"]})["team"]["states"]
+            team["labels"] = self.query("""query($id: String!) { team(id: $id) {
+                labels(first: 100) { nodes { id name } } } }""", {"id": team["id"]})["team"]["labels"]
+            self._team = team
         return self._team
 
     def state(self, kind: str, name: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -121,9 +124,8 @@ class Linear:
 
     # issues ------------------------------------------------------------------
     ISSUE_FIELDS = """id identifier title description url priority updatedAt createdAt branchName
-        state { id name type } labels { nodes { id name } }
-        creator { name displayName } assignee { name displayName }
-        inverseRelations(first: 50) { nodes { type issue { identifier state { type } } } }"""
+        state { id name type } labels(first: 10) { nodes { id name } }
+        inverseRelations(first: 10) { nodes { type issue { identifier state { type } } } }"""
 
     def issue(self, ref: str) -> Dict[str, Any]:
         data = self.query(f"query($id: String!) {{ issue(id: $id) {{ {self.ISSUE_FIELDS} }} }}", {"id": ref})
@@ -132,7 +134,7 @@ class Linear:
         return data["issue"]
 
     def issues(self, label: Optional[str] = None, state_types: Sequence[str] = ("unstarted",),
-               first: int = 50) -> List[Dict[str, Any]]:
+               first: int = 25) -> List[Dict[str, Any]]:
         flt: Dict[str, Any] = {"team": {"id": {"eq": self.team()["id"]}}}
         if state_types:
             flt["state"] = {"type": {"in": list(state_types)}}
@@ -140,7 +142,7 @@ class Linear:
             flt["labels"] = {"some": {"name": {"eqIgnoreCase": label}}}
         data = self.query(f"""query($filter: IssueFilter, $first: Int) {{
             issues(filter: $filter, first: $first) {{ nodes {{ {self.ISSUE_FIELDS} }} }} }}""",
-                          {"filter": flt, "first": first})
+                          {"filter": flt, "first": min(first, 50)})
         rows = data["issues"]["nodes"]
         # Urgent (1) first, "no priority" (0) last, then oldest first.
         rows.sort(key=lambda i: (i.get("priority") or 5, i.get("createdAt", "")))
@@ -171,7 +173,7 @@ class Linear:
                           {"input": {"issueId": issue_id, "body": body}})
         return data["commentCreate"]["comment"]
 
-    def comments(self, issue_id: str, since: Optional[str] = None, first: int = 100) -> List[Dict[str, Any]]:
+    def comments(self, issue_id: str, since: Optional[str] = None, first: int = 50) -> List[Dict[str, Any]]:
         flt = {"createdAt": {"gt": since}} if since else None
         data = self.query("""query($id: String!, $first: Int, $filter: CommentFilter) {
             issue(id: $id) { comments(first: $first, filter: $filter) {
@@ -308,7 +310,7 @@ class LinearBoard:
         os.replace(tmp, path)
 
     def last(self, count: int = 10) -> List[Post]:
-        rows = self.linear.comments(self._issue_id(), first=250)
+        rows = self.linear.comments(self._issue_id(), first=100)
         return [self._post(r) for r in rows[-count:]] if count > 0 else []
 
     def skip_to_latest(self) -> None:
